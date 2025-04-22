@@ -5,7 +5,7 @@ import datasets
 import pandas as pd
 import random
 import time # For delays and backoff
-import os # To securely get configuration from environment variables
+import os # To securely get configuration from environment variables, and check file existence
 import re # For parsing the LLM response
 import requests # For calling OpenRouter API
 import json # For OpenRouter API payload
@@ -48,7 +48,7 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 NVIDIA_API_KEY = os.getenv('NVIDIA_API_KEY')
 
 # Model IDs from .env (or defaults)
-GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL_ID', 'gemini-1.5-flash-latest')
+GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL_ID', 'gemini-2.0-flash')
 GEMMA_MODEL_ID = os.getenv('GEMMA_MODEL_ID', 'google/gemma-3-27b-it:free')
 NVIDIA_MODEL_ID = os.getenv('NVIDIA_MODEL_ID', 'deepseek-ai/deepseek-r1')
 
@@ -571,7 +571,42 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         return None, raw_response_text
 
 
-# --- Main Evaluation Logic (Generalized for dataset configs) ---
+# --- NEW HELPER FUNCTION ---
+def save_failure_iteratively(data_dict: dict, output_path: str, column_order: list, model_name: str):
+    """
+    Appends a single row of failure/error data to a CSV file.
+    Creates the file and writes the header if it doesn't exist.
+
+    Args:
+        data_dict (dict): Dictionary containing the data for one failed question.
+        output_path (str): Path to the CSV file.
+        column_order (list): Desired order of columns in the CSV.
+        model_name (str): Name of the model (e.g., "Gemini") for logging.
+    """
+    try:
+        # Convert the single dictionary to a DataFrame row
+        df_row = pd.DataFrame([data_dict])
+
+        # Check if file exists to determine if header should be written
+        file_exists = os.path.exists(output_path)
+
+        # Ensure all columns exist in the DataFrame, add if missing (with pd.NA)
+        # and reorder columns according to column_order
+        for col in column_order:
+            if col not in df_row.columns:
+                df_row[col] = pd.NA # Use pandas' missing value indicator
+        df_row = df_row[column_order] # Enforce column order
+
+        # Append to CSV
+        df_row.to_csv(output_path, mode='a', header=not file_exists, index=False, encoding='utf-8')
+        status = data_dict.get(f'{model_name.lower()}_status', 'UnknownStatus') # Get the specific status
+        print(f"  -> Appending {model_name} Failure/Error (Status: {status}) to {output_path}")
+
+    except Exception as e:
+        print(f"  -> Error saving failure data for {model_name} to {output_path}: {e}")
+
+
+# --- Main Evaluation Logic (Modified for Iterative Saving) ---
 def evaluate_questions(dataset, config,
                        gemini_output_path, gemma_output_path, nvidia_output_path,
                        gemini_model, gemma_api_key, gemma_model_id,
@@ -579,7 +614,7 @@ def evaluate_questions(dataset, config,
                        max_questions=None):
     """
     Evaluates LLM performance on the loaded dataset based on its config.
-    Saves failures for each model to separate CSV files.
+    Saves failures for each model iteratively to separate CSV files.
     Includes exponential backoff for API calls.
     """
     if dataset is None or config is None:
@@ -587,14 +622,32 @@ def evaluate_questions(dataset, config,
         return
 
     task_type = config["task_type"]
-    gemini_failed_data = []
-    gemma_failed_data = []
-    nvidia_failed_data = []
+    # REMOVED LISTS: gemini_failed_data, gemma_failed_data, nvidia_failed_data
     processed_count = 0
+    gemini_failure_count = 0 # Keep counts for summary
+    gemma_failure_count = 0
+    nvidia_failure_count = 0
 
     print(f"\nStarting evaluation for dataset '{args.dataset}' (Task Type: {task_type}).")
     print(f"Processing up to {max_questions or 'all'} questions...")
+    print(f"Failures/Errors will be saved iteratively to:")
+    print(f"  - Gemini: {gemini_output_path}")
+    print(f"  - Gemma: {gemma_output_path}")
+    print(f"  - NVIDIA: {nvidia_output_path}")
     print(f"Using Exponential Backoff: Max Retries={MAX_RETRIES}, Initial Delay={INITIAL_DELAY}s, Factor={BACKOFF_FACTOR}, Jitter={JITTER_FACTOR}")
+
+    # --- Define base columns and model-specific column orders *before* the loop ---
+    base_columns = ['id', 'dataset', 'question']
+    if task_type == 'mcqa':
+        base_columns.extend(['option_a', 'option_b', 'option_c', 'option_d'])
+    base_columns.append('correct_answer')
+    if config.get("explanation_field"): # Add explanation column only if it exists for the dataset
+         base_columns.append('explanation')
+
+    gemini_column_order = base_columns + ['gemini_model', 'gemini_answer', 'gemini_raw_response', 'gemini_status']
+    gemma_column_order = base_columns + ['gemma_model', 'gemma_answer', 'gemma_raw_response', 'gemma_status']
+    nvidia_column_order = base_columns + ['nvidia_model', 'nvidia_answer', 'nvidia_raw_response', 'nvidia_status']
+    # --- End Column Definition ---
 
     for i, question_data in enumerate(dataset):
         current_max = max_questions if max_questions is not None else float('inf')
@@ -608,19 +661,14 @@ def evaluate_questions(dataset, config,
 
         # 1. Format prompt based on dataset config
         prompt, options_dict = format_question_for_llm(question_data, config) # options_dict only relevant for mcqa
-        # Check if prompt formatting failed (e.g., due to config issues)
         if "(Error:" in prompt:
             print(f"  -> Skipping question {q_id} due to prompt formatting error: {prompt.split('(Error:')[1].split(')')[0]})")
-            # Optionally log this as a specific type of failure if needed
             continue # Skip to the next question
 
-        # --- Call APIs (passing task_type) ---
-        # The backoff/retry logic is now inside these functions via the decorator
+        # --- Call APIs ---
         print("--- Calling Gemini API ---")
         gemini_answer, gemini_raw_response = call_gemini_api(prompt, gemini_model, task_type)
-        # Optional: Add a small fixed delay *between* successful calls if desired,
-        # independent of the error backoff mechanism.
-        # time.sleep(0.1) # Example: Small delay even if successful
+        # time.sleep(0.1) # Optional small delay
 
         print("--- Calling OpenRouter API (Gemma) ---")
         gemma_answer, gemma_raw_response = call_openrouter_gemma_api(prompt, gemma_api_key, gemma_model_id, task_type)
@@ -651,127 +699,75 @@ def evaluate_questions(dataset, config,
         print(f"Gemma Result: {gemma_answer} ({gemma_status})")
         print(f"NVIDIA Result: {nvidia_answer} ({nvidia_status})")
 
-        # Log failures if status is not "Correct"
+        # Determine if failed (Incorrect or Error)
         gemini_failed = gemini_status != "Correct"
         gemma_failed = gemma_status != "Correct"
         nvidia_failed = nvidia_status != "Correct"
 
-        # --- Prepare data for CSV logging ---
-        # Create base info, handling potentially missing fields
+        # --- Prepare base data dictionary for CSV logging ---
         base_info = {
             'id': q_id,
             'dataset': args.dataset, # Add dataset name
             'question': question_data.get(config["question_field"], "N/A"),
             'correct_answer': correct_answer,
         }
-        # Add options only if MCQA task
         if task_type == 'mcqa' and options_dict:
              base_info['option_a'] = options_dict.get('A', '')
              base_info['option_b'] = options_dict.get('B', '')
              base_info['option_c'] = options_dict.get('C', '')
              base_info['option_d'] = options_dict.get('D', '')
-        # Add explanation if field exists
         if config.get("explanation_field"):
              base_info['explanation'] = question_data.get(config["explanation_field"], '')
 
-        # Log to respective lists if failed
+        # --- Save failures/errors ITERATIVELY ---
         if gemini_failed:
+            gemini_failure_count += 1
             gemini_info = {**base_info,
                 'gemini_model': gemini_model.model_name if gemini_model else "N/A",
                 'gemini_answer': gemini_answer if gemini_answer is not None else "N/A",
-                'gemini_raw_response': gemini_raw_response or "N/A", # Ensure raw response is logged even on error
+                'gemini_raw_response': gemini_raw_response or "N/A",
                 'gemini_status': gemini_status,
             }
-            gemini_failed_data.append(gemini_info)
-            print(f"  -> Logging Gemini Failure/Error. Status: {gemini_status}")
+            # Call the helper function to save this row
+            save_failure_iteratively(gemini_info, gemini_output_path, gemini_column_order, "Gemini")
+            # REMOVED: gemini_failed_data.append(gemini_info)
 
         if gemma_failed:
+            gemma_failure_count += 1
             gemma_info = {**base_info,
                 'gemma_model': gemma_model_id,
                 'gemma_answer': gemma_answer if gemma_answer is not None else "N/A",
                 'gemma_raw_response': gemma_raw_response or "N/A",
                 'gemma_status': gemma_status,
             }
-            gemma_failed_data.append(gemma_info)
-            print(f"  -> Logging Gemma Failure/Error. Status: {gemma_status}")
+            # Call the helper function to save this row
+            save_failure_iteratively(gemma_info, gemma_output_path, gemma_column_order, "Gemma")
+            # REMOVED: gemma_failed_data.append(gemma_info)
 
         if nvidia_failed:
+            nvidia_failure_count += 1
             nvidia_info = {**base_info,
                 'nvidia_model': nvidia_model_id,
                 'nvidia_answer': nvidia_answer if nvidia_answer is not None else "N/A",
                 'nvidia_raw_response': nvidia_raw_response or "N/A",
                 'nvidia_status': nvidia_status,
             }
-            nvidia_failed_data.append(nvidia_info)
-            print(f"  -> Logging NVIDIA Failure/Error. Status: {nvidia_status}")
+            # Call the helper function to save this row
+            save_failure_iteratively(nvidia_info, nvidia_output_path, nvidia_column_order, "NVIDIA")
+            # REMOVED: nvidia_failed_data.append(nvidia_info)
 
         if not gemini_failed and not gemma_failed and not nvidia_failed:
-             print(f"  -> All Models Correct or Skipped.")
+             print(f"  -> All Processed Models Correct.")
 
-
-    # --- Save results to separate CSV files ---
-    # Define base columns dynamically based on task type
-    base_columns = ['id', 'dataset', 'question']
-    if task_type == 'mcqa':
-        base_columns.extend(['option_a', 'option_b', 'option_c', 'option_d'])
-    base_columns.append('correct_answer')
-    if config.get("explanation_field"): # Add explanation column only if it exists for the dataset
-         base_columns.append('explanation')
-
-    # Save Gemini failures
-    if gemini_failed_data:
-        print(f"\nSaving {len(gemini_failed_data)} Gemini failures/errors to {gemini_output_path}...")
-        gemini_df = pd.DataFrame(gemini_failed_data)
-        gemini_column_order = base_columns + ['gemini_model', 'gemini_answer', 'gemini_raw_response', 'gemini_status']
-        try:
-            # Ensure all columns exist in the DataFrame, add if missing (with NaN)
-            for col in gemini_column_order:
-                if col not in gemini_df.columns: gemini_df[col] = pd.NA # Use pd.NA for missing values
-            gemini_df = gemini_df[gemini_column_order]
-            gemini_df.to_csv(gemini_output_path, index=False, encoding='utf-8')
-            print(f"File '{gemini_output_path}' saved successfully.")
-        except Exception as e:
-            print(f"Error saving Gemini CSV file: {e}")
-    else:
-        print("\nNo Gemini failures or errors recorded.")
-
-    # Save Gemma failures
-    if gemma_failed_data:
-        print(f"\nSaving {len(gemma_failed_data)} Gemma failures/errors to {gemma_output_path}...")
-        gemma_df = pd.DataFrame(gemma_failed_data)
-        gemma_column_order = base_columns + ['gemma_model', 'gemma_answer', 'gemma_raw_response', 'gemma_status']
-        try:
-            for col in gemma_column_order:
-                if col not in gemma_df.columns: gemma_df[col] = pd.NA
-            gemma_df = gemma_df[gemma_column_order]
-            gemma_df.to_csv(gemma_output_path, index=False, encoding='utf-8')
-            print(f"File '{gemma_output_path}' saved successfully.")
-        except Exception as e:
-            print(f"Error saving Gemma CSV file: {e}")
-    else:
-        print("\nNo Gemma failures or errors recorded.")
-
-    # Save NVIDIA failures
-    if nvidia_failed_data:
-        print(f"\nSaving {len(nvidia_failed_data)} NVIDIA failures/errors to {nvidia_output_path}...")
-        nvidia_df = pd.DataFrame(nvidia_failed_data)
-        nvidia_column_order = base_columns + ['nvidia_model', 'nvidia_answer', 'nvidia_raw_response', 'nvidia_status']
-        try:
-            for col in nvidia_column_order:
-                if col not in nvidia_df.columns: nvidia_df[col] = pd.NA
-            nvidia_df = nvidia_df[nvidia_column_order]
-            nvidia_df.to_csv(nvidia_output_path, index=False, encoding='utf-8')
-            print(f"File '{nvidia_output_path}' saved successfully.")
-        except Exception as e:
-            print(f"Error saving NVIDIA CSV file: {e}")
-    else:
-        print("\nNo NVIDIA DeepSeek failures or errors recorded.")
-
+    # --- REMOVED FINAL SAVING BLOCK ---
+    # The code that created DataFrames from lists and saved them here is gone.
 
     print(f"\nEvaluation finished for dataset '{args.dataset}'. Processed {processed_count} questions.")
-    print(f"Total Gemini failures/errors logged: {len(gemini_failed_data)}")
-    print(f"Total Gemma failures/errors logged: {len(gemma_failed_data)}")
-    print(f"Total NVIDIA failures/errors logged: {len(nvidia_failed_data)}")
+    # Report the counts based on iterative saving
+    print(f"Total Gemini failures/errors saved to '{gemini_output_path}': {gemini_failure_count}")
+    print(f"Total Gemma failures/errors saved to '{gemma_output_path}': {gemma_failure_count}")
+    print(f"Total NVIDIA failures/errors saved to '{nvidia_output_path}': {nvidia_failure_count}")
+
 
 # --- Main Execution (Handles Arguments) ---
 if __name__ == "__main__":
@@ -822,7 +818,6 @@ if __name__ == "__main__":
 
 
     # Check if at least one API key is available for models intended to run
-    # (Refined check: ensure at least one client/key is available *overall*)
     if not gemini_model_instance and not OPENROUTER_API_KEY and not nvidia_client_instance:
          print("Error: No API keys/clients available for any service (Gemini, OpenRouter, NVIDIA). Exiting.")
          exit()
@@ -832,6 +827,15 @@ if __name__ == "__main__":
 
     # --- Run Evaluation ---
     if selected_dataset and selected_config:
+        # Optional: Delete existing output files before starting if you want a fresh run
+        # try:
+        #     if os.path.exists(gemini_output_file): os.remove(gemini_output_file)
+        #     if os.path.exists(gemma_output_file): os.remove(gemma_output_file)
+        #     if os.path.exists(nvidia_output_file): os.remove(nvidia_output_file)
+        #     print("Cleared previous output files (if any).")
+        # except OSError as e:
+        #     print(f"Error deleting old output files: {e}")
+
         evaluate_questions(
             dataset=selected_dataset,
             config=selected_config, # Pass dataset config
@@ -847,4 +851,3 @@ if __name__ == "__main__":
         )
     else:
         print(f"Exiting due to dataset loading failure for '{args.dataset}'.")
-
