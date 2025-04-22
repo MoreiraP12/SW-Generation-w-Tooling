@@ -48,7 +48,7 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 NVIDIA_API_KEY = os.getenv('NVIDIA_API_KEY')
 
 # Model IDs from .env (or defaults)
-GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL_ID', 'gemini-2.0-flash')
+GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL_ID', 'gemini-2.5-flash-preview-04-17')
 GEMMA_MODEL_ID = os.getenv('GEMMA_MODEL_ID', 'google/gemma-3-27b-it:free')
 NVIDIA_MODEL_ID = os.getenv('NVIDIA_MODEL_ID', 'deepseek-ai/deepseek-r1')
 
