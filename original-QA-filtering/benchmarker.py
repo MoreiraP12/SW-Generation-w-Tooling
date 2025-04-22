@@ -103,7 +103,7 @@ DATASET_CONFIGS = {
         "hf_config": "pqa_l",
         "split": "train", # Using train split as it's labeled
         "task_type": "yesno",
-        "question_field": "QUESTION",
+        "question_field": "question",
         "context_field": "CONTEXTS", # List of contexts
         "answer_field": "final_decision", # yes/no/maybe
         "id_field": "PUBMED_ID",
@@ -115,7 +115,7 @@ DATASET_CONFIGS = {
         "hf_config": "pqa_artificial",
         "split": "train",
         "task_type": "yesno",
-        "question_field": "QUESTION",
+        "question_field": "question",
         "context_field": "CONTEXTS", # Single context string
         "answer_field": "final_decision", # yes/no/maybe
         "id_field": "PUBMED_ID",
