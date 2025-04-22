@@ -1,0 +1,9 @@
+id,dataset,question,option_a,option_b,option_c,option_d,correct_answer,explanation,nvidia_model,nvidia_answer,nvidia_raw_response,nvidia_status
+45258d3d-b974-44dd-a161-c3fccbdadd88,medmcqa,Which of the following is not true for myelinated nerve fibers:,Impulse through myelinated fibers is slower than non-myelinated fibers,Membrane currents are generated at nodes of Ranvier,Saltatory conduction of impulses is seen,Local anesthesia is effective only when the nerve is not covered by myelin sheath,,,deepseek-ai/deepseek-r1,A,"<think>
+Okay, let's tackle this question about myelinated nerve fibers. The question is asking which statement is not true. The options are A, B, C, D.
+
+First, I need to recall what I",Incorrect
+b944ada9-d776-4c2a-9180-3ae5f393f72d,medmcqa,Which of the following is not true about glomerular capillaries'),The oncotic pressure of the fluid leaving the capillaries is less than that of fluid entering it,Glucose concentration in the capillaries is the same as that in glomerular filtrate,Constriction of afferent aeriole decreases the blood flow to the glomerulas,Hematocrit of the fluid leaving the capillaries is less than that of the fluid entering it,,"Ans-a. The oncotic pressure of the fluid leaving the capillaries is less than that of fluid entering it Guyton I LpJ1 4-.;anong 23/e p653-6_)Glomerular oncotic pressure (due to plasma protein content) is higher than that of filtrate oncotic pressure in Bowman's capsule""Since glucose is freely filtered and the fluid in the Bowman's capsule is isotonic with plasma, the concentration of glucose in the filtrate is the same as in the capillaries",deepseek-ai/deepseek-r1,N/A,"<think>
+Okay, let's tackle this question. The question is asking which statement is not true about glomerular capillaries. Let's go through each option one by one.
+
+First, I need to remember what glomerular capillaries",API Error/Invalid Response
