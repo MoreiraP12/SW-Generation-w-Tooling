@@ -1,5 +1,5 @@
 # Install necessary libraries if you don't have them
-# pip install datasets pandas google-generativeai python-dotenv requests openai argparse
+# pip install datasets pandas google-generativeai python-dotenv requests openai argparse google-cloud-aiplatform
 
 import datasets
 import pandas as pd
@@ -35,6 +35,16 @@ except ImportError:
     APIError = RateLimitError = APIConnectionError = InternalServerError = BaseException
     OpenAI = None # Ensure OpenAI is None if import failed
 
+# --- Import Vertex AI for Vertex AI Gemma ---
+try:
+    from google.cloud import aiplatform
+    from google.protobuf import json_format
+    from google.protobuf.struct_pb2 import Value
+except ImportError:
+    print("Error: google-cloud-aiplatform library not found.")
+    print("Please install using: pip install google-cloud-aiplatform")
+    aiplatform = None
+
 
 # --- Load Environment Variables ---
 # Load variables from a .env file if it exists
@@ -52,6 +62,11 @@ NVIDIA_API_KEY = os.getenv('NVIDIA_API_KEY')
 GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL_ID', 'gemini-2.0-flash')
 GEMMA_MODEL_ID = os.getenv('GEMMA_MODEL_ID', 'google/gemma-3-4b-it:free')
 NVIDIA_MODEL_ID = os.getenv('NVIDIA_MODEL_ID', 'deepseek-ai/deepseek-r1')
+
+# Vertex AI Gemma Configuration
+VERTEX_AI_PROJECT_ID = os.getenv('VERTEX_AI_PROJECT_ID')
+VERTEX_AI_ENDPOINT_ID = os.getenv('VERTEX_AI_ENDPOINT_ID')
+VERTEX_AI_LOCATION = os.getenv('VERTEX_AI_LOCATION', 'us-central1')
 
 # API Endpoints / Base URLs
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -72,6 +87,8 @@ JITTER_FACTOR = 0.5       # Factor for randomization (0 to 1). 0.5 means +/- 50%
 RETRYABLE_GEMINI_EXCEPTIONS = (ResourceExhausted, ServiceUnavailable)
 RETRYABLE_OPENROUTER_EXCEPTIONS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) # Add others if needed
 RETRYABLE_NVIDIA_EXCEPTIONS = (RateLimitError, APIConnectionError, InternalServerError)
+# For Vertex AI, we'll just use general exceptions since we don't have specific imports
+RETRYABLE_VERTEX_EXCEPTIONS = (Exception,)
 
 # --- Dataset Configurations ---
 DATASET_CONFIGS = {
@@ -124,6 +141,9 @@ DATASET_CONFIGS = {
         "explanation_field": "LONG_ANSWER", # Actual field is 'long_answer'
     },
 }
+
+# Define available models
+AVAILABLE_MODELS = ["gemini", "gemma", "nvidia", "vertex_gemma"]
 
 # --- Helper Functions ---
 
@@ -615,6 +635,101 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         print(f"  -> Error calling NVIDIA API: {e}")
         return None, raw_response_text # Return None for parsed, error for raw
 
+# New function to call Vertex AI Gemma API
+@retry_with_exponential_backoff(retryable_exceptions=RETRYABLE_VERTEX_EXCEPTIONS)
+def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, location: str, task_type: str):
+    """
+    Calls Vertex AI Gemma endpoint with retry logic.
+    Formats prompt based on task type and parses response.
+    
+    Args:
+        prompt: The formatted prompt to send
+        project_id: Google Cloud project ID
+        endpoint_id: Vertex AI endpoint ID 
+        location: GCP region (e.g., "us-central1")
+        task_type: Type of task (mcqa, yesno)
+        
+    Returns:
+        Tuple of (parsed_answer, raw_response)
+    """
+    raw_response_text = "N/A"
+    parsed_choice = None  # Initialize
+    
+    if not (project_id and endpoint_id and location and aiplatform):
+        print("--- Skipping Vertex AI Gemma API Call (Missing Configuration) ---")
+        return None, "Skipped: Missing configuration (project_id, endpoint_id, location, or aiplatform library)"
+    
+    # System prompt based on task type
+    if task_type == "mcqa":
+        system_instruction = "Respond ONLY with the single letter (A, B, C, or D). No explanation, just the letter."
+    elif task_type == "yesno":
+        system_instruction = "Respond ONLY with one word: Yes, No, or Maybe. No explanation, just one word."
+    else:
+        system_instruction = "Please answer the question."
+    
+    # Format the full prompt with system instruction
+    full_prompt = f"{system_instruction}\n\n{prompt}"
+    
+    try:
+        # Initialize the Vertex AI client
+        aiplatform.init(project=project_id, location=location)
+        
+        # Construct the full endpoint resource name
+        endpoint_name = f"projects/{project_id}/locations/{location}/endpoints/{endpoint_id}"
+        
+        # Create an Endpoint object
+        endpoint = aiplatform.Endpoint(endpoint_name)
+        
+        print(f"  -> Calling Vertex AI Gemma (Endpoint ID: {endpoint_id})...")
+        
+        # Format instances as per Vertex AI requirements
+        # Assuming the model expects a single prompt in "prompt" field - adjust as needed
+        instances = [{"prompt": full_prompt}]
+        
+        # Call the endpoint
+        prediction = endpoint.predict(instances=instances)
+        
+        # Check if we have predictions
+        if hasattr(prediction, 'predictions') and prediction.predictions:
+            # Get the raw response - format depends on your model's output
+            # Might need adjustment based on your model's response structure
+            if isinstance(prediction.predictions[0], dict) and "text" in prediction.predictions[0]:
+                # If the response is a dictionary with 'text' key
+                raw_response_text = prediction.predictions[0]["text"].strip()
+            elif isinstance(prediction.predictions[0], str):
+                # If the response is a string
+                raw_response_text = prediction.predictions[0].strip()
+            else:
+                # Handle other response structures
+                raw_response_text = str(prediction.predictions[0]).strip()
+                
+            # Log the raw response
+            if not raw_response_text:
+                raw_response_text = "Empty Response"
+                print(f"  -> Vertex AI Gemma Warn: Empty response")
+            else:
+                print(f"  -> Vertex AI Gemma Raw: '{raw_response_text[:100]}...'")
+                
+            # Parse the response
+            parsed_choice = parse_llm_response(raw_response_text, task_type)
+            
+            if parsed_choice:
+                print(f"  -> Vertex AI Gemma Parsed: {parsed_choice}")
+            elif raw_response_text and "Empty Response" not in raw_response_text:
+                print(f"  -> Vertex AI Gemma Parsing Failed")
+                
+            return parsed_choice, raw_response_text
+        else:
+            # No predictions in response
+            raw_response_text = f"API Error: No predictions in response: {prediction}"
+            print(f"  -> Vertex AI Gemma Error: {raw_response_text[:150]}...")
+            return None, raw_response_text
+            
+    except Exception as e:
+        raw_response_text = f"Vertex AI Gemma Exception: {e}"
+        print(f"  -> Vertex AI Gemma Error: {e}")
+        return None, raw_response_text
+
 
 # <<< RENAMED & MODIFIED: More general function to save results (not just failures) >>>
 def save_result_to_csv(data_dict: dict, output_path: str, column_order: list, model_name: str):
@@ -670,45 +785,55 @@ def save_result_to_csv(data_dict: dict, output_path: str, column_order: list, mo
 # <<< MODIFIED: Save all results (successes and failures) and use timestamped directory >>>
 def evaluate_questions(dataset, config,
                        results_dir, # New parameter for output directory
-                       gemini_model, gemma_api_key, gemma_model_id,
-                       nvidia_client, nvidia_model_id,
+                       models_to_run, # New parameter for which models to run
+                       gemini_model=None, 
+                       gemma_api_key=None, 
+                       gemma_model_id=None,
+                       nvidia_client=None, 
+                       nvidia_model_id=None,
+                       vertex_project_id=None,
+                       vertex_endpoint_id=None,
+                       vertex_location=None,
                        max_questions=None):
     """
     Evaluates LLM performance on the loaded dataset based on its config.
+    Only runs the models specified in models_to_run list.
     Saves ALL results (successes and failures) to separate CSV files in a timestamped directory.
     """
     if dataset is None or config is None:
         print("Invalid dataset or config provided.")
         return
 
-    # Construct output paths with the results directory
-    gemini_output_path = os.path.join(results_dir, f"gemini_results_{args.dataset}.csv")
-    gemma_output_path = os.path.join(results_dir, f"gemma_results_{args.dataset}.csv")
-    nvidia_output_path = os.path.join(results_dir, f"nvidia_results_{args.dataset}.csv")
+    # Construct output paths with the results directory, but only for selected models
+    output_paths = {}
+    if "gemini" in models_to_run:
+        output_paths["gemini"] = os.path.join(results_dir, f"gemini_results_{args.dataset}.csv")
+    if "gemma" in models_to_run:
+        output_paths["gemma"] = os.path.join(results_dir, f"gemma_results_{args.dataset}.csv")
+    if "nvidia" in models_to_run:
+        output_paths["nvidia"] = os.path.join(results_dir, f"nvidia_results_{args.dataset}.csv")
+    if "vertex_gemma" in models_to_run:
+        output_paths["vertex_gemma"] = os.path.join(results_dir, f"vertex_gemma_results_{args.dataset}.csv")
 
     task_type = config["task_type"]
     processed_count = 0
     skipped_count = 0 # Count skipped items (missing Q or invalid GT)
     
-    # Track counts for each model and outcome
-    gemini_correct_count = 0
-    gemini_incorrect_count = 0
-    gemini_error_count = 0
-    
-    gemma_correct_count = 0
-    gemma_incorrect_count = 0
-    gemma_error_count = 0
-    
-    nvidia_correct_count = 0
-    nvidia_incorrect_count = 0
-    nvidia_error_count = 0
+    # Track counts for each selected model and outcome
+    model_stats = {}
+    for model in models_to_run:
+        model_stats[model] = {
+            "correct_count": 0,
+            "incorrect_count": 0,
+            "error_count": 0
+        }
 
     print(f"\nStarting evaluation for dataset '{args.dataset}' (Task Type: {task_type}).")
     print(f"Processing up to {max_questions or 'all'} valid questions...")
+    print(f"Running models: {', '.join(models_to_run)}")
     print(f"ALL results will be saved iteratively to:")
-    print(f"  - Gemini: {gemini_output_path}")
-    print(f"  - Gemma: {gemma_output_path}")
-    print(f"  - NVIDIA: {nvidia_output_path}")
+    for model, path in output_paths.items():
+        print(f"  - {model.capitalize()}: {path}")
     print(f"Using Exponential Backoff: Max Retries={MAX_RETRIES}, Initial Delay={INITIAL_DELAY}s, Factor={BACKOFF_FACTOR}, Jitter={JITTER_FACTOR}")
 
     # --- Define base columns and model-specific column orders ---
@@ -726,9 +851,12 @@ def evaluate_questions(dataset, config,
             base_columns.append('ground_truth_explanation')
 
     # Define column names for CSV output using model prefixes
-    gemini_column_order = base_columns + ['gemini_model', 'gemini_parsed_answer', 'gemini_raw_response', 'gemini_outcome']
-    gemma_column_order = base_columns + ['gemma_model', 'gemma_parsed_answer', 'gemma_raw_response', 'gemma_outcome']
-    nvidia_column_order = base_columns + ['nvidia_model', 'nvidia_parsed_answer', 'nvidia_raw_response', 'nvidia_outcome']
+    column_orders = {
+        "gemini": base_columns + ['gemini_model', 'gemini_parsed_answer', 'gemini_raw_response', 'gemini_outcome'],
+        "gemma": base_columns + ['gemma_model', 'gemma_parsed_answer', 'gemma_raw_response', 'gemma_outcome'],
+        "nvidia": base_columns + ['nvidia_model', 'nvidia_parsed_answer', 'nvidia_raw_response', 'nvidia_outcome'],
+        "vertex_gemma": base_columns + ['vertex_gemma_model', 'vertex_gemma_parsed_answer', 'vertex_gemma_raw_response', 'vertex_gemma_outcome']
+    }
     # --- End Column Definition ---
 
     # Iterate using an iterator to handle skipping efficiently
@@ -776,17 +904,35 @@ def evaluate_questions(dataset, config,
             print(f"--- Processing Valid Question {processed_count}/{max_questions or '?'} (ID: {q_id}) ---")
             print(f"  -> Extracted Question: '{raw_question_text[:100]}...'") # Log question being processed
 
-            # --- Call APIs ---
-            print("--- Calling Gemini API ---")
-            gem_parsed_ans, gem_raw = call_gemini_api(prompt, gemini_model, task_type)
+            # --- Call APIs for Selected Models ---
+            # Initialize with default empty values
+            model_responses = {
+                "gemini": (None, "Not Run"),
+                "gemma": (None, "Not Run"),
+                "nvidia": (None, "Not Run"),
+                "vertex_gemma": (None, "Not Run")
+            }
+            
+            # Only call the APIs for selected models
+            if "gemini" in models_to_run:
+                print("--- Calling Gemini API ---")
+                model_responses["gemini"] = call_gemini_api(prompt, gemini_model, task_type)
+                
+            if "gemma" in models_to_run:
+                print("--- Calling OpenRouter API (Gemma) ---")
+                model_responses["gemma"] = call_openrouter_gemma_api(prompt, gemma_api_key, gemma_model_id, task_type)
+                
+            if "nvidia" in models_to_run:
+                print("--- Calling NVIDIA API (DeepSeek) ---")
+                model_responses["nvidia"] = call_nvidia_api(prompt, nvidia_client, nvidia_model_id, task_type)
+                
+            if "vertex_gemma" in models_to_run:
+                print("--- Calling Vertex AI Gemma API ---")
+                model_responses["vertex_gemma"] = call_vertex_ai_gemma_api(
+                    prompt, vertex_project_id, vertex_endpoint_id, vertex_location, task_type
+                )
 
-            print("--- Calling OpenRouter API (Gemma) ---")
-            gma_parsed_ans, gma_raw = call_openrouter_gemma_api(prompt, gemma_api_key, gemma_model_id, task_type)
-
-            print("--- Calling NVIDIA API (DeepSeek) ---")
-            nvd_parsed_ans, nvd_raw = call_nvidia_api(prompt, nvidia_client, nvidia_model_id, task_type)
-
-            # --- Determine Outcomes ---
+            # --- Determine Outcomes for Each Model ---
             def determine_outcome(parsed_answer, raw_response, ground_truth):
                 """Determines outcome: Correct, Incorrect, API Error, Parsing Failed. Assumes GT is valid here."""
                 if parsed_answer is not None: # Parsing succeeded
@@ -797,44 +943,30 @@ def evaluate_questions(dataset, config,
                     if any(err_sig in raw_response_str for err_sig in ["API Error", "Retry Error", "Blocked by API", "Skipped", "Exception", "Error:", "Client Error", "RequestException", "Unexpected", "Non-Retryable", "Call Exception"]):
                          return "API Error"
                     # Handle cases where API call returned None or explicitly "N/A", "Empty Response" etc.
-                    elif raw_response is None or raw_response_str == "N/A" or raw_response_str.strip() == "Empty Response" or raw_response_str.strip() == "Empty Response from Parts":
+                    elif raw_response is None or raw_response_str == "N/A" or raw_response_str.strip() == "Empty Response" or raw_response_str.strip() == "Empty Response from Parts" or raw_response_str.strip() == "Not Run":
                          return "API Error" # Treat empty/skipped/no-init as API error for simplicity
                     else: # API returned something, but parsing failed
                          return "Parsing Failed"
-
-            gem_outcome = determine_outcome(gem_parsed_ans, gem_raw, ground_truth_ans)
-            gma_outcome = determine_outcome(gma_parsed_ans, gma_raw, ground_truth_ans)
-            nvd_outcome = determine_outcome(nvd_parsed_ans, nvd_raw, ground_truth_ans)
-
-            # Update counters based on outcomes
-            if gem_outcome == "Correct":
-                gemini_correct_count += 1
-            elif gem_outcome == "Incorrect":
-                gemini_incorrect_count += 1
-            else:  # API Error or Parsing Failed
-                gemini_error_count += 1
+            
+            model_outcomes = {}
+            for model in models_to_run:
+                parsed_ans, raw_response = model_responses[model]
+                model_outcomes[model] = determine_outcome(parsed_ans, raw_response, ground_truth_ans)
                 
-            if gma_outcome == "Correct":
-                gemma_correct_count += 1
-            elif gma_outcome == "Incorrect":
-                gemma_incorrect_count += 1
-            else:  # API Error or Parsing Failed
-                gemma_error_count += 1
+                # Update counters based on outcomes
+                if model_outcomes[model] == "Correct":
+                    model_stats[model]["correct_count"] += 1
+                elif model_outcomes[model] == "Incorrect":
+                    model_stats[model]["incorrect_count"] += 1
+                else:  # API Error or Parsing Failed
+                    model_stats[model]["error_count"] += 1
                 
-            if nvd_outcome == "Correct":
-                nvidia_correct_count += 1
-            elif nvd_outcome == "Incorrect":
-                nvidia_incorrect_count += 1
-            else:  # API Error or Parsing Failed
-                nvidia_error_count += 1
+                # Log the results
+                print(f"{model.capitalize()} Parsed: {parsed_ans} (Outcome: {model_outcomes[model]})")
 
-            # Use new variable names in print statements
-            print(f"Gemini Parsed: {gem_parsed_ans} (Outcome: {gem_outcome})")
-            print(f"Gemma Parsed: {gma_parsed_ans} (Outcome: {gma_outcome})")
-            print(f"NVIDIA Parsed: {nvd_parsed_ans} (Outcome: {nvd_outcome})")
-
-            # --- Save ALL results (not just failures) ---
+            # --- Save results for each selected model ---
             log_id = question_data.get(actual_id_field, q_id) if actual_id_field else q_id # Use actual ID if possible
+            
             # Prepare base info
             base_info = {'id': log_id, 'dataset': args.dataset, 'question': raw_question_text, 'ground_truth_answer': ground_truth_ans}
             if task_type == 'mcqa' and options_dict: 
@@ -843,39 +975,42 @@ def evaluate_questions(dataset, config,
             if actual_exp_field:
                 base_info['ground_truth_explanation'] = question_data.get(actual_exp_field, '')
 
-            # Save Gemini results
-            gemini_info = {**base_info,
-                'gemini_model': getattr(gemini_model, 'model_name', '?') if gemini_model else "N/A",
-                'gemini_parsed_answer': gem_parsed_ans if gem_parsed_ans is not None else "N/A",
-                'gemini_raw_response': gem_raw or "N/A",
-                'gemini_outcome': gem_outcome,
-            }
-            save_result_to_csv(gemini_info, gemini_output_path, gemini_column_order, "Gemini")
-
-            # Save Gemma results
-            gemma_info = {**base_info,
-                'gemma_model': gemma_model_id,
-                'gemma_parsed_answer': gma_parsed_ans if gma_parsed_ans is not None else "N/A",
-                'gemma_raw_response': gma_raw or "N/A",
-                'gemma_outcome': gma_outcome,
-            }
-            save_result_to_csv(gemma_info, gemma_output_path, gemma_column_order, "Gemma")
-
-            # Save NVIDIA results
-            nvidia_info = {**base_info,
-                'nvidia_model': nvidia_model_id,
-                'nvidia_parsed_answer': nvd_parsed_ans if nvd_parsed_ans is not None else "N/A",
-                'nvidia_raw_response': nvd_raw or "N/A",
-                'nvidia_outcome': nvd_outcome,
-            }
-            save_result_to_csv(nvidia_info, nvidia_output_path, nvidia_column_order, "NVIDIA")
+            # Save results for each selected model
+            for model in models_to_run:
+                parsed_ans, raw_response = model_responses[model]
+                model_info = {
+                    **base_info,
+                    f'{model}_model': MODEL_ID_MAPPING.get(model, "N/A"),
+                    f'{model}_parsed_answer': parsed_ans if parsed_ans is not None else "N/A",
+                    f'{model}_raw_response': raw_response or "N/A",
+                    f'{model}_outcome': model_outcomes[model],
+                }
+                
+                # Helper function to get the actual model ID for saving
+                def get_model_id_for_saving(model_name):
+                    if model_name == "gemini":
+                        return getattr(gemini_model, 'model_name', '?') if gemini_model else "N/A"
+                    elif model_name == "gemma":
+                        return gemma_model_id
+                    elif model_name == "nvidia":
+                        return nvidia_model_id
+                    elif model_name == "vertex_gemma":
+                        return f"vertex-{vertex_endpoint_id}" if vertex_endpoint_id else "N/A"
+                    return "N/A"
+                
+                # Update with actual model ID
+                model_info[f'{model}_model'] = get_model_id_for_saving(model)
+                
+                # Save to CSV
+                save_result_to_csv(model_info, output_paths[model], column_orders[model], model.capitalize())
 
             # Print summary every 10 questions processed
             if processed_count % 10 == 0:
                 print(f"\n--- Progress Summary (After {processed_count} questions) ---")
-                print(f"Gemini: {gemini_correct_count} correct, {gemini_incorrect_count} incorrect, {gemini_error_count} errors")
-                print(f"Gemma: {gemma_correct_count} correct, {gemma_incorrect_count} incorrect, {gemma_error_count} errors")
-                print(f"NVIDIA: {nvidia_correct_count} correct, {nvidia_incorrect_count} incorrect, {nvidia_error_count} errors\n")
+                for model in models_to_run:
+                    stats = model_stats[model]
+                    print(f"{model.capitalize()}: {stats['correct_count']} correct, {stats['incorrect_count']} incorrect, {stats['error_count']} errors")
+                print()
 
         except StopIteration:
             # This happens when the dataset runs out of items
@@ -888,9 +1023,11 @@ def evaluate_questions(dataset, config,
         total_valid = correct + incorrect
         return (correct / total_valid * 100) if total_valid > 0 else 0
     
-    gemini_accuracy = calculate_accuracy(gemini_correct_count, gemini_incorrect_count)
-    gemma_accuracy = calculate_accuracy(gemma_correct_count, gemma_incorrect_count)
-    nvidia_accuracy = calculate_accuracy(nvidia_correct_count, nvidia_incorrect_count)
+    # Calculate accuracy for each model
+    model_accuracy = {}
+    for model in models_to_run:
+        stats = model_stats[model]
+        model_accuracy[model] = calculate_accuracy(stats["correct_count"], stats["incorrect_count"])
 
     print(f"\n--- Evaluation Summary ---")
     print(f"Dataset: '{args.dataset}'")
@@ -899,9 +1036,11 @@ def evaluate_questions(dataset, config,
     print(f"Skipped Due to Missing Question or Invalid Ground Truth: {skipped_count}")
     print(f"Valid Questions Processed: {processed_count}")
     print(f"\nModel Performance:")
-    print(f"  Gemini: {gemini_correct_count} correct, {gemini_incorrect_count} incorrect, {gemini_error_count} errors (Accuracy: {gemini_accuracy:.2f}%)")
-    print(f"  Gemma: {gemma_correct_count} correct, {gemma_incorrect_count} incorrect, {gemma_error_count} errors (Accuracy: {gemma_accuracy:.2f}%)")
-    print(f"  NVIDIA: {nvidia_correct_count} correct, {nvidia_incorrect_count} incorrect, {nvidia_error_count} errors (Accuracy: {nvidia_accuracy:.2f}%)")
+    
+    for model in models_to_run:
+        stats = model_stats[model]
+        print(f"  {model.capitalize()}: {stats['correct_count']} correct, {stats['incorrect_count']} incorrect, {stats['error_count']} errors (Accuracy: {model_accuracy[model]:.2f}%)")
+    
     print(f"\nResults saved to: {results_dir}")
     
     # Save a summary file with the results
@@ -914,34 +1053,51 @@ def evaluate_questions(dataset, config,
             f.write(f"Skipped Items: {skipped_count}\n")
             f.write(f"Valid Questions Processed: {processed_count}\n\n")
             f.write(f"Model Performance:\n")
-            f.write(f"  Gemini ({getattr(gemini_model, 'model_name', '?') if gemini_model else 'N/A'}):\n")
-            f.write(f"    Correct: {gemini_correct_count} ({gemini_accuracy:.2f}%)\n")
-            f.write(f"    Incorrect: {gemini_incorrect_count}\n")
-            f.write(f"    Errors: {gemini_error_count}\n\n")
-            f.write(f"  Gemma ({gemma_model_id}):\n")
-            f.write(f"    Correct: {gemma_correct_count} ({gemma_accuracy:.2f}%)\n")
-            f.write(f"    Incorrect: {gemma_incorrect_count}\n")
-            f.write(f"    Errors: {gemma_error_count}\n\n")
-            f.write(f"  NVIDIA ({nvidia_model_id}):\n")
-            f.write(f"    Correct: {nvidia_correct_count} ({nvidia_accuracy:.2f}%)\n")
-            f.write(f"    Incorrect: {nvidia_incorrect_count}\n")
-            f.write(f"    Errors: {nvidia_error_count}\n")
+            
+            for model in models_to_run:
+                stats = model_stats[model]
+                model_id = "N/A"
+                
+                if model == "gemini":
+                    model_id = getattr(gemini_model, 'model_name', '?') if gemini_model else "N/A"
+                elif model == "gemma":
+                    model_id = gemma_model_id
+                elif model == "nvidia":
+                    model_id = nvidia_model_id
+                elif model == "vertex_gemma":
+                    model_id = f"vertex-{vertex_endpoint_id}" if vertex_endpoint_id else "N/A"
+                
+                f.write(f"  {model.capitalize()} ({model_id}):\n")
+                f.write(f"    Correct: {stats['correct_count']} ({model_accuracy[model]:.2f}%)\n")
+                f.write(f"    Incorrect: {stats['incorrect_count']}\n")
+                f.write(f"    Errors: {stats['error_count']}\n\n")
+                
         print(f"Summary saved to: {summary_path}")
     except Exception as e:
         print(f"Error saving summary: {e}")
 
 
+# Helper dictionary to map model names to their IDs
+MODEL_ID_MAPPING = {
+    "gemini": GEMINI_MODEL_ID,
+    "gemma": GEMMA_MODEL_ID,
+    "nvidia": NVIDIA_MODEL_ID,
+    "vertex_gemma": f"vertex-endpoint-{VERTEX_AI_ENDPOINT_ID}"
+}
+
 # --- Main Execution (Handles Arguments) ---
 if __name__ == "__main__":
 
     # --- Argument Parsing ---
-    parser = argparse.ArgumentParser(description="Evaluate LLMs (Gemini, Gemma, NVIDIA) on medical datasets. Saves all results in timestamped directory.")
+    parser = argparse.ArgumentParser(description="Evaluate LLMs on medical datasets. Saves all results in timestamped directory.")
     # Add --clear_logs argument
     parser.add_argument("--clear_logs", action='store_true', help="Delete existing output CSV files first.")
     parser.add_argument("--dataset", "-d", required=True, choices=DATASET_CONFIGS.keys(),
                         help="Name of the dataset configuration to use.")
     parser.add_argument("--max_questions", "-n", type=int, default=None,
                         help="Maximum number of *valid* questions to process (default: process all).")
+    parser.add_argument("--models", "-m", nargs="+", choices=AVAILABLE_MODELS, default=AVAILABLE_MODELS,
+                        help="List of models to run (default: all models)")
     args = parser.parse_args()
 
     # Create timestamped directory for outputs
@@ -952,44 +1108,73 @@ if __name__ == "__main__":
     if args.clear_logs:
         print("Note: --clear_logs not needed with timestamped directories, but noted.")
 
-    # --- Initialize API Clients ---
+    # Initialize API clients, but only for selected models
     gemini_model_instance = None
-    if GOOGLE_API_KEY and genai: # Check if genai was imported successfully
-        try:
-            print(f"Configuring Google GenAI ({GEMINI_MODEL_ID})...")
-            genai.configure(api_key=GOOGLE_API_KEY)
-            gemini_model_instance = genai.GenerativeModel(GEMINI_MODEL_ID)
-            print(" -> Google GenAI initialized successfully.")
-        except Exception as e:
-            print(f" -> WARNING: Error initializing Google GenAI: {e}")
-    elif not GOOGLE_API_KEY:
-        print(f"Skipping Gemini initialization (GOOGLE_API_KEY found: {bool(GOOGLE_API_KEY)}, Library loaded: {bool(genai)})")
-    else: # genai import failed
-         print(f"Skipping Gemini initialization (google-generativeai library failed to import. Key found: {bool(GOOGLE_API_KEY)})")
-
     nvidia_client_instance = None
-    if NVIDIA_API_KEY and OpenAI: # Check if OpenAI was imported successfully
-        try:
-            print(f"Configuring NVIDIA Client ({NVIDIA_MODEL_ID})...")
-            nvidia_client_instance = OpenAI(base_url=NVIDIA_API_BASE_URL, api_key=NVIDIA_API_KEY)
-            print(" -> NVIDIA API Client initialized successfully.")
-        except Exception as e:
-            print(f" -> WARNING: Error initializing NVIDIA API Client: {e}")
-    elif not NVIDIA_API_KEY:
-         print(f"Skipping NVIDIA initialization (NVIDIA_API_KEY found: {bool(NVIDIA_API_KEY)}, Library loaded: {bool(OpenAI)})")
-    else: # openai import failed
-        print(f"Skipping NVIDIA initialization (openai library failed to import. Key found: {bool(NVIDIA_API_KEY)})")
+    
+    # Initialize Gemini if needed
+    if "gemini" in args.models:
+        if GOOGLE_API_KEY and genai: # Check if genai was imported successfully
+            try:
+                print(f"Configuring Google GenAI ({GEMINI_MODEL_ID})...")
+                genai.configure(api_key=GOOGLE_API_KEY)
+                gemini_model_instance = genai.GenerativeModel(GEMINI_MODEL_ID)
+                print(" -> Google GenAI initialized successfully.")
+            except Exception as e:
+                print(f" -> WARNING: Error initializing Google GenAI: {e}")
+        elif not GOOGLE_API_KEY:
+            print(f"Skipping Gemini initialization (GOOGLE_API_KEY found: {bool(GOOGLE_API_KEY)}, Library loaded: {bool(genai)})")
+        else: # genai import failed
+             print(f"Skipping Gemini initialization (google-generativeai library failed to import. Key found: {bool(GOOGLE_API_KEY)})")
 
-    # Check OpenRouter key
-    if OPENROUTER_API_KEY:
-        print(f"OpenRouter Key found (Model: {GEMMA_MODEL_ID}). Will attempt calls.")
+    # Initialize NVIDIA if needed
+    if "nvidia" in args.models:
+        if NVIDIA_API_KEY and OpenAI: # Check if OpenAI was imported successfully
+            try:
+                print(f"Configuring NVIDIA Client ({NVIDIA_MODEL_ID})...")
+                nvidia_client_instance = OpenAI(base_url=NVIDIA_API_BASE_URL, api_key=NVIDIA_API_KEY)
+                print(" -> NVIDIA API Client initialized successfully.")
+            except Exception as e:
+                print(f" -> WARNING: Error initializing NVIDIA API Client: {e}")
+        elif not NVIDIA_API_KEY:
+             print(f"Skipping NVIDIA initialization (NVIDIA_API_KEY found: {bool(NVIDIA_API_KEY)}, Library loaded: {bool(OpenAI)})")
+        else: # openai import failed
+            print(f"Skipping NVIDIA initialization (openai library failed to import. Key found: {bool(NVIDIA_API_KEY)})")
+
+    # Check OpenRouter key if needed
+    if "gemma" in args.models:
+        if OPENROUTER_API_KEY:
+            print(f"OpenRouter Key found (Model: {GEMMA_MODEL_ID}). Will attempt calls.")
+        else:
+            print("Skipping OpenRouter calls (OPENROUTER_API_KEY not found).")
+    
+    # Check Vertex AI configuration if needed
+    if "vertex_gemma" in args.models:
+        if VERTEX_AI_PROJECT_ID and VERTEX_AI_ENDPOINT_ID and aiplatform:
+            print(f"Vertex AI configuration found (Project: {VERTEX_AI_PROJECT_ID}, Endpoint: {VERTEX_AI_ENDPOINT_ID}).")
+        else:
+            print("Skipping Vertex AI Gemma calls (Missing configuration).")
+            if "vertex_gemma" in args.models:
+                args.models.remove("vertex_gemma")
+                print(" -> Removed vertex_gemma from models to run.")
+
+    # Check if at least one API client is available for the selected models
+    valid_models = []
+    if "gemini" in args.models and gemini_model_instance:
+        valid_models.append("gemini")
+    if "gemma" in args.models and OPENROUTER_API_KEY:
+        valid_models.append("gemma")
+    if "nvidia" in args.models and nvidia_client_instance:
+        valid_models.append("nvidia")
+    if "vertex_gemma" in args.models and VERTEX_AI_PROJECT_ID and VERTEX_AI_ENDPOINT_ID and aiplatform:
+        valid_models.append("vertex_gemma")
+    
+    if not valid_models:
+        print("\nError: No valid models to run. Exiting.")
+        exit(1) # Exit with error code
     else:
-        print("Skipping OpenRouter calls (OPENROUTER_API_KEY not found).")
-
-    # Check if at least one API client is available
-    if not gemini_model_instance and not OPENROUTER_API_KEY and not nvidia_client_instance:
-         print("\nError: No API keys/clients configured or initialized successfully for any service. Exiting.")
-         exit(1) # Exit with error code
+        print(f"\nRunning with models: {', '.join(valid_models)}")
+        args.models = valid_models  # Update models list to only include valid ones
 
     # --- Load Data based on Args ---
     selected_dataset, selected_config = load_data(args.dataset)
@@ -1000,11 +1185,15 @@ if __name__ == "__main__":
             dataset=selected_dataset,
             config=selected_config,
             results_dir=results_dir,  # Pass the timestamped directory
+            models_to_run=args.models,  # Pass selected models
             gemini_model=gemini_model_instance,
             gemma_api_key=OPENROUTER_API_KEY,
             gemma_model_id=GEMMA_MODEL_ID,
             nvidia_client=nvidia_client_instance,
             nvidia_model_id=NVIDIA_MODEL_ID,
+            vertex_project_id=VERTEX_AI_PROJECT_ID,
+            vertex_endpoint_id=VERTEX_AI_ENDPOINT_ID,
+            vertex_location=VERTEX_AI_LOCATION,
             max_questions=args.max_questions
         )
     else:
