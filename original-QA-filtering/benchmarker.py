@@ -132,7 +132,7 @@ DATASET_CONFIGS = {
         "hf_path": "TsinghuaC3I/MedXpertQA",
         "hf_config": "Text",
         "split": "test",
-        "task_type": "mcqa",
+        "task_type": "medXpert",
         "question_field": "question",
         "options_fields": "options",
         "answer_field": "label",
@@ -442,6 +442,8 @@ def parse_llm_response(response_text: str, task_type: str):
 
     # If no specific format found after checks, return None
     # Warning printing moved to where it's called if needed
+    else:
+        return response_text
     return None
 
 
@@ -462,7 +464,7 @@ def call_gemini_api(prompt: str, model: genai.GenerativeModel, task_type: str):
 
     # System prompt based on task type
     if task_type == "mcqa":
-        system_instruction = "Respond ONLY with the single letter (A, B, C, or D)."
+        system_instruction = "Respond ONLY with the single letter."
     elif task_type == "yesno":
         system_instruction = "Respond ONLY with one word: Yes, No, or Maybe."
     else:
@@ -543,7 +545,7 @@ def call_openrouter_gemma_api(prompt: str, api_key: str, model_id: str, task_typ
 
     payload = {"model": model_id,
                "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
-               "max_tokens": 15, "temperature": 0.1}
+               "max_tokens": 2000, "temperature": 0.1}
 
     try:
         print(f"  -> Calling OpenRouter ({model_id})...")  # Added model name log
@@ -695,14 +697,14 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         return None, raw_response_text  # Return None for parsed, error for raw
 
 
-# New function to call Vertex AI Gemma API
-# Modified function to handle the special output format from Vertex AI Gemma
+# Modified function to retry if parsed answer is invalid
+# Modified function to retry if parsed answer isn't a single letter for MCQA
 @retry_with_exponential_backoff(retryable_exceptions=RETRYABLE_VERTEX_EXCEPTIONS)
-def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, location: str, task_type: str):
+def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, location: str, task_type: str, max_retry_attempts: int = 3):
     """
     Calls Vertex AI Gemma endpoint with retry logic.
     Formats prompt based on task type and parses response.
-    Handles the specific output format where the API returns both the prompt and answer.
+    Retries if the API returns anything other than a single letter for MCQA.
     
     Args:
         prompt: The formatted prompt to send
@@ -710,101 +712,157 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
         endpoint_id: Vertex AI endpoint ID 
         location: GCP region (e.g., "us-central1")
         task_type: Type of task (mcqa, yesno)
+        max_retry_attempts: Maximum number of retries for invalid answers
         
     Returns:
         Tuple of (parsed_answer, raw_response)
     """
-    raw_response_text = "N/A"
-    parsed_choice = None  # Initialize
-
     if not (project_id and endpoint_id and location and aiplatform):
         print("--- Skipping Vertex AI Gemma API Call (Missing Configuration) ---")
         return None, "Skipped: Missing configuration (project_id, endpoint_id, location, or aiplatform library)"
 
-    # System prompt based on task type
+    # Define expected answer format based on task type
     if task_type == "mcqa":
-        system_instruction = "Respond ONLY with the single letter (A, B, C, or D). No explanation, just the letter."
+        system_instruction = ("INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
+            "FORMAT: Your entire response must be exactly 'Answer: X' where X is just the letter.\n\n"
+            "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
+        # Define valid answer pattern for MCQA - single letters only
+        valid_answer_pattern = re.compile(r'^[A-Z]$')
     elif task_type == "yesno":
-        system_instruction = "Respond ONLY with one word: Yes, No, or Maybe. No explanation, just one word."
+        system_instruction = "Respond ONLY with one word: Yes, No, or Maybe. No explanation, just one word after 'Answer:'. Example: 'Answer: Yes'."
+        # Define valid answer pattern for Yes/No - only Yes, No, or Maybe
+        valid_answer_pattern = re.compile(r'^(Yes|No|Maybe)$', re.IGNORECASE)
     else:
-        system_instruction = "Please answer the question."
+        system_instruction = ("INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
+            "FORMAT: Your entire response must be exactly 'Answer: X' where X is just the letter.\n\n"
+            "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
+        valid_answer_pattern = re.compile(r'^[A-Z]$')
 
     # Format the full prompt with system instruction
-    full_prompt = f"{system_instruction}\n\n{prompt}"
+    original_full_prompt = f"{str(system_instruction)}\n\n{prompt}"
+    full_prompt = original_full_prompt
 
-    try:
-        # Initialize the Vertex AI client
-        aiplatform.init(project=project_id, location=location)
+    raw_response_text = None
+    
+    for attempt in range(max_retry_attempts):
+        try:
+            # Initialize the Vertex AI client
+            aiplatform.init(project=project_id, location=location)
 
-        # Construct the full endpoint resource name
-        endpoint_name = f"projects/{project_id}/locations/{location}/endpoints/{endpoint_id}"
+            # Construct the full endpoint resource name
+            endpoint_name = f"projects/{project_id}/locations/{location}/endpoints/{endpoint_id}"
 
-        # Create an Endpoint object
-        endpoint = aiplatform.Endpoint(endpoint_name)
+            # Create an Endpoint object
+            endpoint = aiplatform.Endpoint(endpoint_name)
 
-        print(f"  -> Calling Vertex AI Gemma (Endpoint ID: {endpoint_id})...")
+            print(f"  -> Calling Vertex AI Gemma (Endpoint ID: {endpoint_id}) - Attempt {attempt + 1}/{max_retry_attempts}...")
 
-        # Format instances as per Vertex AI requirements
-        instances = [{"prompt": full_prompt}]
+            # Format instances as per Vertex AI requirements
+            instances = [{"prompt": full_prompt}]
 
-        # Call the endpoint
-        prediction = endpoint.predict(instances=instances)
+            # Call the endpoint
+            prediction = endpoint.predict(instances=instances)
 
-        # Check if we have predictions
-        if hasattr(prediction, 'predictions') and prediction.predictions:
-            # Extract the raw response - format depends on your model's output
-            if isinstance(prediction.predictions[0], dict) and "text" in prediction.predictions[0]:
-                raw_response_text = prediction.predictions[0]["text"].strip()
-            elif isinstance(prediction.predictions[0], str):
-                raw_response_text = prediction.predictions[0].strip()
+            # Check if we have predictions
+            if hasattr(prediction, 'predictions') and prediction.predictions:
+                # Extract the raw response
+                if isinstance(prediction.predictions[0], dict) and "text" in prediction.predictions[0]:
+                    raw_response_text = prediction.predictions[0]["text"].strip()
+                elif isinstance(prediction.predictions[0], str):
+                    raw_response_text = prediction.predictions[0].strip()
+                else:
+                    raw_response_text = str(prediction.predictions[0]).strip()
+
+                # Handle empty response
+                if not raw_response_text:
+                    print(f"  -> Vertex AI Gemma Warn: Empty response - Attempt {attempt + 1}")
+                    continue
+                    
+                print(f"  -> Vertex AI Gemma Raw: '{raw_response_text[:100]}...' - Attempt {attempt + 1}")
+
+                # Extract the answer part
+                answer_match = re.search(r'Answer:\s*([A-Za-z]+)', raw_response_text)
+                
+                if "Output:" in raw_response_text:
+                    output_parts = raw_response_text.split("Output:")
+                    if len(output_parts) > 1:
+                        output_text = output_parts[1].strip()
+                        answer_match = re.search(r'Answer:\s*([A-Za-z]+)', output_text)
+                
+                # If we found an Answer: pattern
+                if answer_match:
+                    extracted_answer = answer_match.group(1).strip()
+                    print(f"  -> Extracted answer: '{extracted_answer}' - Attempt {attempt + 1}")
+                    
+                    # Parse the response
+                    parsed_choice = parse_llm_response(extracted_answer, task_type)
+                    
+                    # Now validate if the parsed answer meets our format requirements
+                    is_valid_format = False
+                    if parsed_choice:
+                        # For MCQA, check if it's just a single letter
+                        if task_type == "mcqa":
+                            is_valid_format = valid_answer_pattern.match(parsed_choice) is not None
+                        # For Yes/No, check if it's Yes, No, or Maybe only
+                        elif task_type == "yesno":
+                            is_valid_format = valid_answer_pattern.match(parsed_choice) is not None
+                        else:
+                            is_valid_format = valid_answer_pattern.match(parsed_choice) is not None
+                    
+                    # If valid format, return the result
+                    if is_valid_format:
+                        print(f"  -> Valid answer format found: '{parsed_choice}' - Attempt {attempt + 1}")
+                        return parsed_choice, raw_response_text
+                    else:
+                        print(f"  -> Invalid answer format: '{parsed_choice}' - Attempt {attempt + 1}")
+                        
+                        # For subsequent attempts, strengthen the instruction by emphasizing the format
+                        if attempt < max_retry_attempts - 1:
+                            # Create a stronger system instruction for retry
+                            enhanced_system_instruction = system_instruction + (
+                                "\nPLEASE READ CAREFULLY: Your previous response was incorrect. "
+                                "For MCQA questions, you MUST provide ONLY a single letter (A, B, C, etc.) as your answer. "
+                                "DO NOT provide explanations, reasoning, or context. "
+                                "ONLY the letter. Example: 'Answer: A'\n\n"
+                            )
+                            
+                            # Use the stronger instruction for the retry
+                            full_prompt = f"{enhanced_system_instruction}\n\n{prompt}"
+                else:
+                    print(f"  -> Could not extract answer with 'Answer:' pattern - Attempt {attempt + 1}")
+                    
+                    # Create more explicit instruction for retry
+                    if attempt < max_retry_attempts - 1:
+                        enhanced_system_instruction = (
+                            "INSTRUCTION: You MUST answer with EXACTLY this format: 'Answer: X' where X is just ONE LETTER.\n\n"
+                            "IMPORTANT: I need ONLY the letter, nothing else. No explanations or additional text.\n\n"
+                            "BAD: 'I think the answer is A because...'\n"
+                            "BAD: 'Answer: The patient with...'\n"
+                            "GOOD: 'Answer: A'\n\n"
+                        )
+                        full_prompt = f"{enhanced_system_instruction}\n\n{prompt}"
             else:
-                raw_response_text = str(prediction.predictions[0]).strip()
-
-            # Log the raw response
-            if not raw_response_text:
-                raw_response_text = "Empty Response"
-                print(f"  -> Vertex AI Gemma Warn: Empty response")
-            else:
-                print(f"  -> Vertex AI Gemma Raw: '{raw_response_text[:100]}...'")
-
-            # Extract just the answer part from responses that contain both prompt and answer
-            extracted_answer = raw_response_text
-
-            # Look for "Answer:" in the response
-            answer_match = re.search(r'Answer:\s*([A-Za-z]+)', raw_response_text)
-            if answer_match:
-                extracted_answer = answer_match.group(1).strip()
-                print(f"  -> Extracted answer from response: '{extracted_answer}'")
-            # Also look for "Output:" followed by "Answer:" pattern
-            elif "Output:" in raw_response_text:
-                output_parts = raw_response_text.split("Output:")
-                if len(output_parts) > 1:
-                    output_text = output_parts[1].strip()
-                    answer_match = re.search(r'Answer:\s*([A-Za-z]+)', output_text)
-                    if answer_match:
-                        extracted_answer = answer_match.group(1).strip()
-                        print(f"  -> Extracted answer from output section: '{extracted_answer}'")
-
-            # Parse the extracted answer
-            parsed_choice = parse_llm_response(extracted_answer, task_type)
-
-            if parsed_choice:
-                print(f"  -> Vertex AI Gemma Parsed: {parsed_choice}")
-            elif raw_response_text and "Empty Response" not in raw_response_text:
-                print(f"  -> Vertex AI Gemma Parsing Failed")
-
-            return parsed_choice, raw_response_text
-        else:
-            # No predictions in response
-            raw_response_text = f"API Error: No predictions in response: {prediction}"
-            print(f"  -> Vertex AI Gemma Error: {raw_response_text[:150]}...")
-            return None, raw_response_text
-
-    except Exception as e:
-        raw_response_text = f"Vertex AI Gemma Exception: {e}"
-        print(f"  -> Vertex AI Gemma Error: {e}")
-        return None, raw_response_text
-
+                # No predictions in response
+                print(f"  -> No predictions in response - Attempt {attempt + 1}")
+                raw_response_text = f"API Error: No predictions in response: {prediction}"
+                continue
+                
+            # Add delay between attempts
+            if attempt < max_retry_attempts - 1:
+                time.sleep(1 * (attempt + 1))
+                
+        except Exception as e:
+            raw_response_text = f"Vertex AI Gemma Exception: {e}"
+            print(f"  -> Vertex AI Gemma Error: {e} - Attempt {attempt + 1}")
+            # Let the retry_with_exponential_backoff decorator handle retryable exceptions
+            raise
+    
+    # If we reach here, all attempts failed
+    print(f"  -> All {max_retry_attempts} attempts failed to get a valid answer format.")
+    # Return whatever was last parsed, even if invalid
+    if 'parsed_choice' in locals() and parsed_choice:
+        return parsed_choice, raw_response_text
+    return None, raw_response_text if 'raw_response_text' in locals() else "All attempts failed"
 
 # <<< RENAMED & MODIFIED: More general function to save results (not just failures) >>>
 def save_result_to_csv(data_dict: dict, output_path: str, column_order: list, model_name: str):
