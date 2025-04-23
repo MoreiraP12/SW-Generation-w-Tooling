@@ -1,0 +1,33 @@
+id,dataset,question,ground_truth_answer,ground_truth_explanation,nvidia_model,nvidia_parsed_answer,nvidia_raw_response,nvidia_outcome
+e9ad821a-c438-4965-9f77-760819dfa155,medmcqa,Chronic urethral obstruction due to benign prismatic hyperplasia can lead to the following change in kidney parenchyma,C,"Chronic urethral obstruction because of urinary calculi, prostatic hyperophy, tumors, normal pregnancy, tumors, uterine prolapse or functional disorders cause hydronephrosis which by definition is used to describe dilatation of renal pelvis and calculus associated with progressive atrophy of the kidney due to obstruction to the outflow of urine Refer Robbins 7yh/9,1012,9/e. P950",deepseek-ai/deepseek-r1,C,"<think>
+Okay, let's tackle this question. The question is about the effect of chronic urethral obstruction caused by benign prostatic hyperplasia (I think they meant prostatic, not prismatic, maybe a typo) on the kidney parenchyma. The options are hyperplasia, hypertrophy, atrophy, or dysplasia.
+
+First, I need to recall what happens when there's a chronic obstruction in the urinary tract. Benign prostatic hyperplasia (BPH) is a common condition in older men where the prostate gland enlarges, compressing the urethra and causing urinary retention. If the obstruction is chronic, the urine can't flow out properly, leading to increased pressure in the bladder. Over time, this back pressure can affect the kidneys.
+
+So, the kidneys might experience hydronephrosis, which is the swelling of the kidneys due to urine buildup. This happens because the urine can't drain properly from the kidney to the bladder. The increased pressure in the renal pelvis and calyces can damage the nephrons, the functional units of the kidney. 
+
+Now, considering the kidney parenchyma—the functional tissue of the kidney, which includes the nephrons. Chronic obstruction and increased pressure would lead to damage of the nephrons. If the nephrons are damaged and die off, the kidney tissue would start to shrink. That's called atrophy. Atrophy is the reduction in size or wasting away of an organ or tissue. So, in this case, the kidney parenchyma would undergo atrophy due to the chronic pressure and damage from the obstruction.
+
+Let me check the other options. Hyperplasia is an increase in the number of cells. Hypertrophy is an increase in cell size. Dysplasia refers to abnormal cell growth or development, which is more related to precancerous changes. Since the problem here is long-standing obstruction leading to tissue shrinkage, atrophy makes the most sense. So the answer should be C. Atrophy.
+</think>
+
+Chronic urethral obstruction from benign prostatic hyperplasia increases pressure in the urinary tract, leading to hydronephrosis. Persistent pressure damages nephrons, causing functional kidney tissue (parenchyma) to shrink. This tissue loss is termed **atrophy**. Hyperplasia (cell proliferation) and hypertrophy (cell enlargement) are unlikely in this destructive process. Dysplasia (abnormal cell growth) is unrelated. 
+
+**Answer:** [C]",Correct
+e3d3c4e1-4fb2-45e7-9f88-247cc8f373b3,medmcqa,Which vitamin is supplied from only animal source:,C,"Ans. (c) Vitamin B12 Ref: Harrison's 19th ed. P 640* Vitamin B12 (Cobalamin) is synthesized solely by microorganisms.* In humans, the only source for humans is food of animal origin, e.g., meat, fish, and dairy products.* Vegetables, fruits, and other foods of nonanimal origin doesn't contain Vitamin B12 .* Daily requirements of vitamin Bp is about 1-3 pg. Body stores are of the order of 2-3 mg, sufficient for 3-4 years if supplies are completely cut off.",deepseek-ai/deepseek-r1,C,"<think>
+Okay, so the question is asking which vitamin comes only from animal sources. The options are A to D. Let me think.
+
+First, I remember that vitamins can be water-soluble or fat-soluble. Vitamin C is water-soluble. I think Vitamin C is found in citrus fruits like oranges and lemons, so that's plant-based. So A is probably not the answer.
+
+Vitamin B7 is biotin. I think biotin is found in foods like eggs, but also in nuts and some vegetables. So maybe B7 can come from both animal and plant sources. So B might not be the right choice.
+
+Vitamin B12, I've heard that it's mainly in animal products. Like meat, fish, eggs, dairy. I think vegetarians and especially vegans have to take supplements because B12 isn't found in plants. So C could be the answer here.
+
+Vitamin D. Hmm. The body can make it when the skin is exposed to sunlight. But dietary sources include fatty fish, liver, egg yolks. Some foods like milk are fortified with Vitamin D, but that's added. So natural sources are animal-based. But wait, are there any plant sources? Mushrooms exposed to UV light can have Vitamin D2. So maybe D can come from both, depending on the source. So maybe D isn't the only one from animals.
+
+So putting it together: Vitamin B12 (C) is only from animal sources. Vitamin D can be from some plants if they're treated, but maybe the question is considering natural sources. But the answer is likely C. Let me confirm. Yes, B12 is not produced by plants, so the only natural sources are animal products. So the correct answer is C.
+</think>
+
+The vitamin that is supplied exclusively from animal sources is Vitamin B12, as it is not naturally present in plant foods and is primarily found in meat, fish, dairy, and eggs. While Vitamin D can be synthesized by the body through sunlight exposure and is found in some fortified plant-based foods, its natural dietary sources are animal-based. However, since the question specifies ""only"" animal sources, Vitamin B12 is the correct choice. 
+
+[C]",Correct

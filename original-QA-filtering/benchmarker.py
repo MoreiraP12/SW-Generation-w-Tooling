@@ -636,11 +636,13 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         return None, raw_response_text # Return None for parsed, error for raw
 
 # New function to call Vertex AI Gemma API
+# Modified function to handle the special output format from Vertex AI Gemma
 @retry_with_exponential_backoff(retryable_exceptions=RETRYABLE_VERTEX_EXCEPTIONS)
 def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, location: str, task_type: str):
     """
     Calls Vertex AI Gemma endpoint with retry logic.
     Formats prompt based on task type and parses response.
+    Handles the specific output format where the API returns both the prompt and answer.
     
     Args:
         prompt: The formatted prompt to send
@@ -683,7 +685,6 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
         print(f"  -> Calling Vertex AI Gemma (Endpoint ID: {endpoint_id})...")
         
         # Format instances as per Vertex AI requirements
-        # Assuming the model expects a single prompt in "prompt" field - adjust as needed
         instances = [{"prompt": full_prompt}]
         
         # Call the endpoint
@@ -691,16 +692,12 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
         
         # Check if we have predictions
         if hasattr(prediction, 'predictions') and prediction.predictions:
-            # Get the raw response - format depends on your model's output
-            # Might need adjustment based on your model's response structure
+            # Extract the raw response - format depends on your model's output
             if isinstance(prediction.predictions[0], dict) and "text" in prediction.predictions[0]:
-                # If the response is a dictionary with 'text' key
                 raw_response_text = prediction.predictions[0]["text"].strip()
             elif isinstance(prediction.predictions[0], str):
-                # If the response is a string
                 raw_response_text = prediction.predictions[0].strip()
             else:
-                # Handle other response structures
                 raw_response_text = str(prediction.predictions[0]).strip()
                 
             # Log the raw response
@@ -710,8 +707,26 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
             else:
                 print(f"  -> Vertex AI Gemma Raw: '{raw_response_text[:100]}...'")
                 
-            # Parse the response
-            parsed_choice = parse_llm_response(raw_response_text, task_type)
+            # Extract just the answer part from responses that contain both prompt and answer
+            extracted_answer = raw_response_text
+            
+            # Look for "Answer:" in the response
+            answer_match = re.search(r'Answer:\s*([A-Za-z]+)', raw_response_text)
+            if answer_match:
+                extracted_answer = answer_match.group(1).strip()
+                print(f"  -> Extracted answer from response: '{extracted_answer}'")
+            # Also look for "Output:" followed by "Answer:" pattern
+            elif "Output:" in raw_response_text:
+                output_parts = raw_response_text.split("Output:")
+                if len(output_parts) > 1:
+                    output_text = output_parts[1].strip()
+                    answer_match = re.search(r'Answer:\s*([A-Za-z]+)', output_text)
+                    if answer_match:
+                        extracted_answer = answer_match.group(1).strip()
+                        print(f"  -> Extracted answer from output section: '{extracted_answer}'")
+            
+            # Parse the extracted answer
+            parsed_choice = parse_llm_response(extracted_answer, task_type)
             
             if parsed_choice:
                 print(f"  -> Vertex AI Gemma Parsed: {parsed_choice}")
@@ -729,7 +744,6 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
         raw_response_text = f"Vertex AI Gemma Exception: {e}"
         print(f"  -> Vertex AI Gemma Error: {e}")
         return None, raw_response_text
-
 
 # <<< RENAMED & MODIFIED: More general function to save results (not just failures) >>>
 def save_result_to_csv(data_dict: dict, output_path: str, column_order: list, model_name: str):
