@@ -27,5 +27,5 @@ These commands will run the evaluation on the first 2 questions from each datase
 
 * `python benchmarker.py`: Executes the script.
 * `-d [dataset_key]`: Specifies the dataset configuration to use (e.g., `medmcqa`, `pubmedqa_pqa_l`).
-* `-n 2`: Sets the `max_questions` argument. The script will stop after successfully processing 2 questions that have valid question text and valid ground truth answers (it might check more rows if initial ones are skipped).
+* `--range [start:end]`: Sets the index range for evaluation. The start index is inclusive, and the end index is also inclusive. If end is not provided after the colon, the evaluation will process through the end of the dataset. For all data you need to configure it to 0:
 * `--clear_logs`: An optional flag added to the script that deletes existing `gemini_failed_...`, `gemma_failed_...`, and `nvidia_failed_...` CSV files for the specified dataset before the run starts, ensuring a fresh log.

@@ -468,16 +468,14 @@ def call_gemini_api(prompt: str, model: genai.GenerativeModel, task_type: str):
     elif task_type == "yesno":
         system_instruction = "Respond ONLY with one word: Yes, No, or Maybe."
     else:
-        system_instruction = ("INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
-            "FORMAT: Your entire response must be exactly 'X' where X is just the letter.\n\n"
-            "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
+        system_instruction = "Please answer the question."
 
     # The try/except for retryable errors is now handled by the decorator
     # We still need to catch non-retryable API issues or handle the response structure
     try:
-        generation_config = genai.types.GenerationConfig(max_output_tokens=4096, temperature=0.1, top_p=0.95)
+        generation_config = genai.types.GenerationConfig(max_output_tokens=400, temperature=0.1, top_p=0.95)
         print(f"  -> Calling Gemini ({getattr(model, 'model_name', '?')})...")  # Added model name log
-        response = model.generate_content([str(system_instruction), prompt], generation_config=generation_config,
+        response = model.generate_content([system_instruction, prompt], generation_config=generation_config,
                                           request_options={'timeout': 60})  # Added timeout
 
         # Check for blocked content *before* trying to access .text
@@ -625,21 +623,19 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         system_prompt = "Analyze context/question. Respond ONLY with Yes, No, or Maybe inside square brackets at the end. Example: [Yes]."
         expected_pattern = r'\[(Yes|No|Maybe)\]'  # Case-insensitive search pattern needed in re.search
     else:
-        system_prompt = ("INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
-            "FORMAT: Your entire response must be exactly '[X]' where X is just the letter.\n\n"
-            "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
-        expected_pattern = r'\[([A-Z])\]'
+        system_prompt = "Please answer the question."
+        expected_pattern = None
 
     # The try/except for retryable errors is now handled by the decorator
     try:
         print(f"  -> Calling NVIDIA ({model_id})...")  # Added model name log
         completion = client.chat.completions.create(
             model=model_id,
-            messages=[{"role": "system", "content": str(system_prompt)}, {"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
             temperature=0.1, top_p=0.95,
-            max_tokens=4096, 
+            max_tokens=4096,  # <<< KEPT INCREASED TOKENS >>>
             stream=False,
-            timeout=60.0 
+            timeout=60.0  # Added timeout
         )
 
         if completion.choices and len(completion.choices) > 0:
@@ -653,6 +649,7 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
                     print(f"  -> NVIDIA Warn: {raw_response_text} (Finish: {finish_reason})")
                     # Fall through to parsing, which will return None
                 else:
+
                     print(
                         f"  -> NVIDIA Raw (Finish: {finish_reason}): '{raw_response_text[:100]}...'")  # Log raw response and finish reason
 
@@ -662,7 +659,7 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
                     matches = re.findall(expected_pattern, raw_response_text, re.IGNORECASE)
                     if matches:
                         extracted_answer = matches[-1]  # Get the last bracketed answer found
-                        parsed_choice = extracted_answer.upper() if (task_type == "mcqa" or task_type == "medXpert") else extracted_answer.lower()
+                        parsed_choice = extracted_answer.upper() if task_type == "mcqa" else extracted_answer.lower()
                         print(f"  -> NVIDIA Parsed (Bracket): {parsed_choice}")
                     else:
                         # Fallback if bracket format not found
@@ -709,15 +706,15 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
     Calls Vertex AI Gemma endpoint with retry logic.
     Formats prompt based on task type and parses response.
     Retries if the API returns anything other than a single letter for MCQA.
-    
+
     Args:
         prompt: The formatted prompt to send
         project_id: Google Cloud project ID
-        endpoint_id: Vertex AI endpoint ID 
+        endpoint_id: Vertex AI endpoint ID
         location: GCP region (e.g., "us-central1")
         task_type: Type of task (mcqa, yesno)
         max_retry_attempts: Maximum number of retries for invalid answers
-        
+
     Returns:
         Tuple of (parsed_answer, raw_response)
     """
@@ -747,7 +744,7 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
     full_prompt = original_full_prompt
 
     raw_response_text = None
-    
+
     for attempt in range(max_retry_attempts):
         try:
             # Initialize the Vertex AI client
@@ -781,26 +778,26 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
                 if not raw_response_text:
                     print(f"  -> Vertex AI Gemma Warn: Empty response - Attempt {attempt + 1}")
                     continue
-                    
+
                 print(f"  -> Vertex AI Gemma Raw: '{raw_response_text[:100]}...' - Attempt {attempt + 1}")
 
                 # Extract the answer part
                 answer_match = re.search(r'Answer:\s*([A-Za-z]+)', raw_response_text)
-                
+
                 if "Output:" in raw_response_text:
                     output_parts = raw_response_text.split("Output:")
                     if len(output_parts) > 1:
                         output_text = output_parts[1].strip()
                         answer_match = re.search(r'Answer:\s*([A-Za-z]+)', output_text)
-                
+
                 # If we found an Answer: pattern
                 if answer_match:
                     extracted_answer = answer_match.group(1).strip()
                     print(f"  -> Extracted answer: '{extracted_answer}' - Attempt {attempt + 1}")
-                    
+
                     # Parse the response
                     parsed_choice = parse_llm_response(extracted_answer, task_type)
-                    
+
                     # Now validate if the parsed answer meets our format requirements
                     is_valid_format = False
                     if parsed_choice:
@@ -812,33 +809,37 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
                             is_valid_format = valid_answer_pattern.match(parsed_choice) is not None
                         else:
                             is_valid_format = valid_answer_pattern.match(parsed_choice) is not None
-                    
+
                     # If valid format, return the result
                     if is_valid_format:
                         print(f"  -> Valid answer format found: '{parsed_choice}' - Attempt {attempt + 1}")
                         return parsed_choice, raw_response_text
                     else:
                         print(f"  -> Invalid answer format: '{parsed_choice}' - Attempt {attempt + 1}")
-                        
+
                         # For subsequent attempts, strengthen the instruction by emphasizing the format
                         if attempt < max_retry_attempts - 1:
                             # Create a stronger system instruction for retry
                             enhanced_system_instruction = system_instruction + (
                                 "\nPLEASE READ CAREFULLY: Your previous response was incorrect. "
-                                "For questions, you MUST provide ONLY a single letter (A, B, C, etc.) as your answer. "
+                                "For MCQA questions, you MUST provide ONLY a single letter (A, B, C, etc.) as your answer. "
                                 "DO NOT provide explanations, reasoning, or context. "
+                                "ONLY the letter. Example: 'Answer: A'\n\n"
                             )
-                            
+
                             # Use the stronger instruction for the retry
                             full_prompt = f"{enhanced_system_instruction}\n\n{prompt}"
                 else:
                     print(f"  -> Could not extract answer with 'Answer:' pattern - Attempt {attempt + 1}")
-                    
+
                     # Create more explicit instruction for retry
                     if attempt < max_retry_attempts - 1:
                         enhanced_system_instruction = (
                             "INSTRUCTION: You MUST answer with EXACTLY this format: 'Answer: X' where X is just ONE LETTER.\n\n"
                             "IMPORTANT: I need ONLY the letter, nothing else. No explanations or additional text.\n\n"
+                            "BAD: 'I think the answer is A because...'\n"
+                            "BAD: 'Answer: The patient with...'\n"
+                            "GOOD: 'Answer: A'\n\n"
                         )
                         full_prompt = f"{enhanced_system_instruction}\n\n{prompt}"
             else:
@@ -846,17 +847,17 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
                 print(f"  -> No predictions in response - Attempt {attempt + 1}")
                 raw_response_text = f"API Error: No predictions in response: {prediction}"
                 continue
-                
+
             # Add delay between attempts
             if attempt < max_retry_attempts - 1:
                 time.sleep(1 * (attempt + 1))
-                
+
         except Exception as e:
             raw_response_text = f"Vertex AI Gemma Exception: {e}"
             print(f"  -> Vertex AI Gemma Error: {e} - Attempt {attempt + 1}")
             # Let the retry_with_exponential_backoff decorator handle retryable exceptions
             raise
-    
+
     # If we reach here, all attempts failed
     print(f"  -> All {max_retry_attempts} attempts failed to get a valid answer format.")
     # Return whatever was last parsed, even if invalid
@@ -922,6 +923,9 @@ def save_result_to_csv(data_dict: dict, output_path: str, column_order: list, mo
 def evaluate_questions(dataset, config,
                        results_dir,  # New parameter for output directory
                        models_to_run,  # New parameter for which models to run
+                       start_index=0, # New parameter: Starting index
+                       end_index=None, # New parameter: Ending index (inclusive)
+                       max_questions=None, # Max questions to process
                        gemini_model=None,
                        gemma_api_key=None,
                        gemma_model_id=None,
@@ -929,8 +933,7 @@ def evaluate_questions(dataset, config,
                        nvidia_model_id=None,
                        vertex_project_id=None,
                        vertex_endpoint_id=None,
-                       vertex_location=None,
-                       max_questions=None):
+                       vertex_location=None):
     """
     Evaluates LLM performance on the loaded dataset based on its config.
     Only runs the models specified in models_to_run list.
@@ -965,7 +968,7 @@ def evaluate_questions(dataset, config,
         }
 
     print(f"\nStarting evaluation for dataset '{args.dataset}' (Task Type: {task_type}).")
-    print(f"Processing up to {max_questions or 'all'} valid questions...")
+    print(f"Processing from index {start_index} to {end_index or 'end'} (Max questions to process: {max_questions or 'unlimited'})")
     print(f"Running models: {', '.join(models_to_run)}")
     print(f"ALL results will be saved iteratively to:")
     for model, path in output_paths.items():
@@ -998,26 +1001,30 @@ def evaluate_questions(dataset, config,
     }
     # --- End Column Definition ---
 
-    # Iterate using an iterator to handle skipping efficiently
-    dataset_iterator = iter(dataset)
-    items_checked = 0  # Track how many items we checked from the dataset
+    # Iterate through the dataset using indices
+    data_len = len(dataset)
+    if end_index is None:
+        end_index = data_len - 1 # process until the end of dataset
+    else:
+        end_index = min(end_index, data_len - 1) # End index should not be longer than the dataset size
 
-    while max_questions is None or processed_count < max_questions:
+    for i in range(start_index, end_index + 1): # Iterate up to and *including* end_index
+        if max_questions is not None and processed_count >= max_questions:
+            print("Reached maximum number of valid questions. Stopping.")
+            break
         try:
-            # Get the next item from the dataset
-            question_data = next(dataset_iterator)
-            items_checked += 1
+            question_data = dataset[i]
+            items_checked = i + 1 # track how many items we checked
 
             # Determine ID (handle potential differences in field name)
             id_config_key = config.get("id_field")
-            actual_id_field = 'pubid' if config[
-                                             'hf_path'] == 'qiaojin/PubMedQA' else id_config_key  # Use 'pubid' for PubMedQA
+            actual_id_field = 'pubid' if config['hf_path'] == 'qiaojin/PubMedQA' else id_config_key  # Use 'pubid' for PubMedQA
             if config['hf_path'] == 'medmcqa': actual_id_field = 'id'  # Use 'id' for medmcqa
             # Use index if ID field is missing or not found in data
             q_id = question_data.get(actual_id_field) if actual_id_field else None
             if q_id is None: q_id = f'index_{items_checked - 1}'  # Fallback to index
 
-            print(f"\n--- Checking Item {items_checked} (ID: {q_id}) ---")
+            print(f"\n--- Checking Item {items_checked} (Index: {i}, ID: {q_id}) ---")
 
             # 1. Format prompt AND get extracted question text
             # This function now returns "N/A" if the question is missing/empty
@@ -1159,10 +1166,10 @@ def evaluate_questions(dataset, config,
                         f"{model.capitalize()}: {stats['correct_count']} correct, {stats['incorrect_count']} incorrect, {stats['error_count']} errors")
                 print()
 
-        except StopIteration:
+        except IndexError:
             # This happens when the dataset runs out of items
-            print(f"\nFinished processing all available items in the dataset ({items_checked} checked).")
-            break  # Exit the while loop
+            print(f"\nFinished processing all available items in the dataset ({len(dataset)} total).")
+            break  # Exit the for loop
 
     # --- Final Summary ---
     # Calculate accuracy (counting only questions where parsing succeeded)
@@ -1178,7 +1185,9 @@ def evaluate_questions(dataset, config,
 
     print(f"\n--- Evaluation Summary ---")
     print(f"Dataset: '{args.dataset}'")
-    print(f"Target Max Valid Questions: {max_questions or 'All'}")
+    print(f"Start Index: {start_index}")
+    print(f"End Index: {end_index}")
+    print(f"Max Questions: {max_questions or 'All'}")
     print(f"Total Items Checked in Dataset: {items_checked}")
     print(f"Skipped Due to Missing Question or Invalid Ground Truth: {skipped_count}")
     print(f"Valid Questions Processed: {processed_count}")
@@ -1197,6 +1206,9 @@ def evaluate_questions(dataset, config,
         with open(summary_path, 'w') as f:
             f.write(f"Evaluation Summary for Dataset: {args.dataset}\n")
             f.write(f"Date & Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            f.write(f"Start Index: {start_index}\n")
+            f.write(f"End Index: {end_index}\n")
+            f.write(f"Max Questions: {max_questions or 'All'}\n")
             f.write(f"Total Items Checked in Dataset: {items_checked}\n")
             f.write(f"Skipped Items: {skipped_count}\n")
             f.write(f"Valid Questions Processed: {processed_count}\n\n")
@@ -1235,7 +1247,6 @@ MODEL_ID_MAPPING = {
 
 # --- Main Execution (Handles Arguments) ---
 if __name__ == "__main__":
-
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(
         description="Evaluate LLMs on medical datasets. Saves all results in timestamped directory.")
@@ -1243,8 +1254,8 @@ if __name__ == "__main__":
     parser.add_argument("--clear_logs", action='store_true', help="Delete existing output CSV files first.")
     parser.add_argument("--dataset", "-d", required=True, choices=DATASET_CONFIGS.keys(),
                         help="Name of the dataset configuration to use.")
-    parser.add_argument("--max_questions", "-n", type=int, default=None,
-                        help="Maximum number of *valid* questions to process (default: process all).")
+    parser.add_argument("--range", "-r", type=str, required=True,
+                        help="Index range of questions to evaluate, in the format start:end (e.g. 100:500).")
     parser.add_argument("--models", "-m", nargs="+", choices=AVAILABLE_MODELS, default=AVAILABLE_MODELS,
                         help="List of models to run (default: all models)")
     args = parser.parse_args()
@@ -1256,6 +1267,15 @@ if __name__ == "__main__":
     # but kept for backward compatibility
     if args.clear_logs:
         print("Note: --clear_logs not needed with timestamped directories, but noted.")
+
+    #  extract range
+    try:
+        range_str = args.range
+        start_str, end_str = range_str.split(':')
+        start_index = int(start_str)
+        end_index = int(end_str) if end_str else None
+    except Exception as e:
+        print(f"Wrong range {e}")
 
     # Initialize API clients, but only for selected models
     gemini_model_instance = None
@@ -1348,7 +1368,9 @@ if __name__ == "__main__":
             vertex_project_id=VERTEX_AI_PROJECT_ID,
             vertex_endpoint_id=VERTEX_AI_ENDPOINT_ID,
             vertex_location=VERTEX_AI_LOCATION,
-            max_questions=args.max_questions
+            start_index=start_index,
+            end_index=end_index,
+            max_questions=None
         )
     else:
         print(f"\nExiting due to dataset loading failure for '{args.dataset}'.")
