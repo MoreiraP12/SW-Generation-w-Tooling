@@ -41,8 +41,8 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 NVIDIA_API_KEY = os.getenv('NVIDIA_API_KEY')
 
 # Use the specific model IDs you intend to use in the main script
-GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL_ID', 'gemini-1.5-flash-latest')
-GEMMA_MODEL_ID = os.getenv('GEMMA_MODEL_ID', 'google/gemma-2-9b-it:free') # Using 9b free tier again
+GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL_ID', 'gemini-2.0-flash')
+GEMMA_MODEL_ID = os.getenv('GEMMA_MODEL_ID', 'google/gemma-2-4b-it:free') # Using 9b free tier again
 NVIDIA_MODEL_ID = os.getenv('NVIDIA_MODEL_ID', 'deepseek-ai/deepseek-r1') # Back to this ID
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"

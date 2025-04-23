@@ -12,6 +12,7 @@ import json # For OpenRouter API payload
 from dotenv import load_dotenv # To load environment variables from .env file
 import argparse # For command-line arguments
 from functools import wraps # For the decorator
+from datetime import datetime # For timestamped directories
 
 # --- SDK Imports ---
 try:
@@ -62,7 +63,7 @@ OPENROUTER_TITLE = os.getenv('OPENROUTER_TITLE', '')
 
 # --- Backoff Configuration ---
 MAX_RETRIES = 5           # Maximum number of retry attempts
-INITIAL_DELAY = 1.0       # Initial delay in seconds
+INITIAL_DELAY = 8.0       # Initial delay in seconds
 BACKOFF_FACTOR = 2.0      # Multiplier for the delay (exponential)
 JITTER_FACTOR = 0.5       # Factor for randomization (0 to 1). 0.5 means +/- 50% of delay
 
@@ -125,6 +126,24 @@ DATASET_CONFIGS = {
 }
 
 # --- Helper Functions ---
+
+def create_timestamped_directory():
+    """
+    Creates a directory with timestamp (YYYY-MM-DD_HH-MM-SS) and returns its path.
+    """
+    # Get current date and time
+    now = datetime.now()
+    # Format: 2025-04-22_14-30-45
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    # Create directory name
+    dir_name = f"results_{timestamp}"
+    
+    # Create the directory if it doesn't exist
+    if not os.path.exists(dir_name):
+        os.makedirs(dir_name)
+        print(f"Created output directory: {dir_name}")
+    
+    return dir_name
 
 # Unchanged from your provided script
 def retry_with_exponential_backoff(retryable_exceptions):
@@ -597,23 +616,23 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         return None, raw_response_text # Return None for parsed, error for raw
 
 
-# <<< MODIFIED: Using new column names in print log and dict keys >>>
-def save_failure_iteratively(data_dict: dict, output_path: str, column_order: list, model_name: str):
+# <<< RENAMED & MODIFIED: More general function to save results (not just failures) >>>
+def save_result_to_csv(data_dict: dict, output_path: str, column_order: list, model_name: str):
     """
-    Appends a single row of failure/error data to a CSV file using new column names.
+    Appends a single row of result data (success or failure) to a CSV file.
     Creates the file and writes the header if it doesn't exist.
 
     Args:
-        data_dict (dict): Dictionary containing the data for one failed question.
+        data_dict (dict): Dictionary containing the data for one question.
         output_path (str): Path to the CSV file.
-        column_order (list): Desired order of columns in the CSV (e.g., gemini_column_order).
+        column_order (list): Desired order of columns in the CSV.
         model_name (str): Name of the model (e.g., "Gemini") for logging.
     """
     try:
-        # Use new column names when accessing the dict passed from evaluate_questions
-        parsed_ans_key = f'{model_name.lower()}_parsed_answer' # Renamed key
+        # Use column names when accessing the dict
+        parsed_ans_key = f'{model_name.lower()}_parsed_answer'
         raw_resp_key = f'{model_name.lower()}_raw_response'
-        outcome_key = f'{model_name.lower()}_outcome'          # Renamed key
+        outcome_key = f'{model_name.lower()}_outcome'
 
         # Ensure basic types for CSV
         temp_dict = data_dict.copy() # Work on a copy
@@ -621,10 +640,10 @@ def save_failure_iteratively(data_dict: dict, output_path: str, column_order: li
              if pd.isna(value): temp_dict[key] = '' # Replace pandas NA with empty string
              elif not isinstance(value, (str, int, float, bool)): temp_dict[key] = str(value) # Convert others to string
 
-        df_row = pd.DataFrame([temp_dict]); file_exists = os.path.exists(output_path)
+        df_row = pd.DataFrame([temp_dict])
+        file_exists = os.path.exists(output_path)
 
         # Ensure all defined columns exist in the DataFrame before saving
-        # Use the passed column_order list which contains the desired CSV headers
         for col in column_order:
             if col not in df_row.columns:
                 df_row[col] = '' # Add missing columns with empty string
@@ -633,66 +652,80 @@ def save_failure_iteratively(data_dict: dict, output_path: str, column_order: li
         # Append to CSV
         df_row.to_csv(output_path, mode='a', header=not file_exists, index=False, encoding='utf-8')
 
-        # Log using the new terms and accessing the correct keys from temp_dict
-        outcome = temp_dict.get(outcome_key, 'UnknownOutcome') # Use new key
-        model_ans = temp_dict.get(parsed_ans_key, 'N/A')       # Use new key
-        ground_truth = temp_dict.get('ground_truth_answer', 'N/A') # Use new key
+        # Log using the correct keys from temp_dict
+        outcome = temp_dict.get(outcome_key, 'UnknownOutcome')
+        model_ans = temp_dict.get(parsed_ans_key, 'N/A')
+        ground_truth = temp_dict.get('ground_truth_answer', 'N/A')
         raw_resp_short = str(temp_dict.get(raw_resp_key, ''))[:70] + "..."
-        # Updated print log to be clearer
-        print(f"  -> Logged {model_name} Failure (Outcome: {outcome}, GT: {ground_truth}, Parsed: {model_ans}, Raw: '{raw_resp_short}') to {output_path}")
+        # Updated log to indicate success/failure status
+        if outcome == "Correct":
+            print(f"  -> Logged {model_name} Success (GT: {ground_truth}, Parsed: {model_ans}) to {output_path}")
+        else:
+            print(f"  -> Logged {model_name} {outcome} (GT: {ground_truth}, Parsed: {model_ans}, Raw: '{raw_resp_short}') to {output_path}")
 
     except Exception as e:
-        print(f"  -> Error saving failure data row for {model_name} to {output_path}: {e}")
-        # Optional: print full dict on error
-        # print(f"     Problematic data sample: {data_dict}")
+        print(f"  -> Error saving data row for {model_name} to {output_path}: {e}")
 
 
-# <<< MODIFIED: Using new column names, outcome logic, skipping logic >>>
+# <<< MODIFIED: Save all results (successes and failures) and use timestamped directory >>>
 def evaluate_questions(dataset, config,
-                       gemini_output_path, gemma_output_path, nvidia_output_path,
+                       results_dir, # New parameter for output directory
                        gemini_model, gemma_api_key, gemma_model_id,
                        nvidia_client, nvidia_model_id,
                        max_questions=None):
     """
     Evaluates LLM performance on the loaded dataset based on its config.
-    Saves failures for each model iteratively to separate CSV files.
-    Uses clearer column names and outcome logic. Skips missing/invalid items.
+    Saves ALL results (successes and failures) to separate CSV files in a timestamped directory.
     """
     if dataset is None or config is None:
         print("Invalid dataset or config provided.")
         return
 
+    # Construct output paths with the results directory
+    gemini_output_path = os.path.join(results_dir, f"gemini_results_{args.dataset}.csv")
+    gemma_output_path = os.path.join(results_dir, f"gemma_results_{args.dataset}.csv")
+    nvidia_output_path = os.path.join(results_dir, f"nvidia_results_{args.dataset}.csv")
+
     task_type = config["task_type"]
     processed_count = 0
     skipped_count = 0 # Count skipped items (missing Q or invalid GT)
-    gemini_failure_count = 0 # Keep counts for summary
-    gemma_failure_count = 0
-    nvidia_failure_count = 0
+    
+    # Track counts for each model and outcome
+    gemini_correct_count = 0
+    gemini_incorrect_count = 0
+    gemini_error_count = 0
+    
+    gemma_correct_count = 0
+    gemma_incorrect_count = 0
+    gemma_error_count = 0
+    
+    nvidia_correct_count = 0
+    nvidia_incorrect_count = 0
+    nvidia_error_count = 0
 
     print(f"\nStarting evaluation for dataset '{args.dataset}' (Task Type: {task_type}).")
-    print(f"Processing up to {max_questions or 'all'} valid questions...") # Clarified goal
-    print(f"Failures/Errors will be saved iteratively to:")
+    print(f"Processing up to {max_questions or 'all'} valid questions...")
+    print(f"ALL results will be saved iteratively to:")
     print(f"  - Gemini: {gemini_output_path}")
     print(f"  - Gemma: {gemma_output_path}")
     print(f"  - NVIDIA: {nvidia_output_path}")
     print(f"Using Exponential Backoff: Max Retries={MAX_RETRIES}, Initial Delay={INITIAL_DELAY}s, Factor={BACKOFF_FACTOR}, Jitter={JITTER_FACTOR}")
 
-    # --- Define NEW base columns and model-specific column orders ---
-    # Uses 'ground_truth_answer' and 'ground_truth_explanation' for CSV headers
-    base_columns = ['id', 'dataset', 'question', 'ground_truth_answer'] # Renamed
+    # --- Define base columns and model-specific column orders ---
+    base_columns = ['id', 'dataset', 'question', 'ground_truth_answer']
     # Handle potential differences in explanation field name vs config key
     explanation_config_key = config.get("explanation_field")
     actual_exp_field = None # This will store the actual key to use for getting data
     if explanation_config_key:
         # Use specific known field name if PubMedQA, otherwise use config key
-        actual_exp_field = 'long_answer' if config['hf_path'] == 'qiaojin/PubMedQA' else config.get("explanation_field", None) # Adjusted logic
+        actual_exp_field = 'long_answer' if config['hf_path'] == 'qiaojin/PubMedQA' else config.get("explanation_field", None)
         # Special case for medmcqa which uses 'exp'
         if config['hf_path'] == 'medmcqa': actual_exp_field = 'exp'
 
         if actual_exp_field: # Check if we determined a valid field name
-            base_columns.append('ground_truth_explanation') # Renamed CSV column
+            base_columns.append('ground_truth_explanation')
 
-    # Define NEW column names for CSV output using model prefixes
+    # Define column names for CSV output using model prefixes
     gemini_column_order = base_columns + ['gemini_model', 'gemini_parsed_answer', 'gemini_raw_response', 'gemini_outcome']
     gemma_column_order = base_columns + ['gemma_model', 'gemma_parsed_answer', 'gemma_raw_response', 'gemma_outcome']
     nvidia_column_order = base_columns + ['nvidia_model', 'nvidia_parsed_answer', 'nvidia_raw_response', 'nvidia_outcome']
@@ -722,19 +755,19 @@ def evaluate_questions(dataset, config,
             # This function now returns "N/A" if the question is missing/empty
             prompt, options_dict, raw_question_text = format_question_for_llm(question_data, config)
 
-            # <<< --- CRITICAL CHECK 1: Skip if question is 'N/A' --- >>>
+            # --- CRITICAL CHECK 1: Skip if question is 'N/A' ---
             if raw_question_text == "N/A":
                 print(f"  -> SKIPPING Item ID {q_id} (Dataset Index: {items_checked-1}): Question field ('{config['question_field']}') missing/empty.")
                 skipped_count += 1
                 continue # Move to the next item in the dataset
 
             # --- Process Results (Get GT Answer BEFORE potentially skipping) ---
-            ground_truth_ans = get_ground_truth_answer(question_data, config) # Use renamed function
+            ground_truth_ans = get_ground_truth_answer(question_data, config)
             print(f"Ground Truth Answer: {ground_truth_ans}") # Print GT for checking
 
-            # <<< --- CRITICAL CHECK 2: Skip if Ground Truth is Invalid or Missing --- >>>
-            if ground_truth_ans == "N/A" or (isinstance(ground_truth_ans, str) and ground_truth_ans.startswith("Invalid")): # Check for N/A or Invalid string
-                print(f"  -> SKIPPING Item ID {q_id} (Dataset Index: {items_checked-1}): Ground truth answer is missing or invalid ('{ground_truth_ans}').") # Updated msg
+            # --- CRITICAL CHECK 2: Skip if Ground Truth is Invalid or Missing ---
+            if ground_truth_ans == "N/A" or (isinstance(ground_truth_ans, str) and ground_truth_ans.startswith("Invalid")):
+                print(f"  -> SKIPPING Item ID {q_id} (Dataset Index: {items_checked-1}): Ground truth answer is missing or invalid ('{ground_truth_ans}').")
                 skipped_count += 1 # Count it as skipped
                 continue # Skip to the next item in the dataset
 
@@ -743,26 +776,23 @@ def evaluate_questions(dataset, config,
             print(f"--- Processing Valid Question {processed_count}/{max_questions or '?'} (ID: {q_id}) ---")
             print(f"  -> Extracted Question: '{raw_question_text[:100]}...'") # Log question being processed
 
-
             # --- Call APIs ---
-            # Original script structure - calling each API
             print("--- Calling Gemini API ---")
-            gem_parsed_ans, gem_raw = call_gemini_api(prompt, gemini_model, task_type) # Renamed variables
+            gem_parsed_ans, gem_raw = call_gemini_api(prompt, gemini_model, task_type)
 
             print("--- Calling OpenRouter API (Gemma) ---")
-            gma_parsed_ans, gma_raw = call_openrouter_gemma_api(prompt, gemma_api_key, gemma_model_id, task_type) # Renamed variables
+            gma_parsed_ans, gma_raw = call_openrouter_gemma_api(prompt, gemma_api_key, gemma_model_id, task_type)
 
             print("--- Calling NVIDIA API (DeepSeek) ---")
-            nvd_parsed_ans, nvd_raw = call_nvidia_api(prompt, nvidia_client, nvidia_model_id, task_type) # Renamed variables
+            nvd_parsed_ans, nvd_raw = call_nvidia_api(prompt, nvidia_client, nvidia_model_id, task_type)
 
-
-            # --- Determine NEW Outcomes ---
+            # --- Determine Outcomes ---
             def determine_outcome(parsed_answer, raw_response, ground_truth):
                 """Determines outcome: Correct, Incorrect, API Error, Parsing Failed. Assumes GT is valid here."""
                 if parsed_answer is not None: # Parsing succeeded
                     return "Correct" if str(parsed_answer) == str(ground_truth) else "Incorrect"
                 else: # Parsing failed OR API Error occurred
-                    raw_response_str = str(raw_response) if raw_response is not None else "" # Handle None raw response
+                    raw_response_str = str(raw_response) if raw_response is not None else ""
                     # Check common error indicators in raw response
                     if any(err_sig in raw_response_str for err_sig in ["API Error", "Retry Error", "Blocked by API", "Skipped", "Exception", "Error:", "Client Error", "RequestException", "Unexpected", "Non-Retryable", "Call Exception"]):
                          return "API Error"
@@ -776,64 +806,76 @@ def evaluate_questions(dataset, config,
             gma_outcome = determine_outcome(gma_parsed_ans, gma_raw, ground_truth_ans)
             nvd_outcome = determine_outcome(nvd_parsed_ans, nvd_raw, ground_truth_ans)
 
+            # Update counters based on outcomes
+            if gem_outcome == "Correct":
+                gemini_correct_count += 1
+            elif gem_outcome == "Incorrect":
+                gemini_incorrect_count += 1
+            else:  # API Error or Parsing Failed
+                gemini_error_count += 1
+                
+            if gma_outcome == "Correct":
+                gemma_correct_count += 1
+            elif gma_outcome == "Incorrect":
+                gemma_incorrect_count += 1
+            else:  # API Error or Parsing Failed
+                gemma_error_count += 1
+                
+            if nvd_outcome == "Correct":
+                nvidia_correct_count += 1
+            elif nvd_outcome == "Incorrect":
+                nvidia_incorrect_count += 1
+            else:  # API Error or Parsing Failed
+                nvidia_error_count += 1
+
             # Use new variable names in print statements
             print(f"Gemini Parsed: {gem_parsed_ans} (Outcome: {gem_outcome})")
             print(f"Gemma Parsed: {gma_parsed_ans} (Outcome: {gma_outcome})")
             print(f"NVIDIA Parsed: {nvd_parsed_ans} (Outcome: {nvd_outcome})")
 
-            # --- Determine if failed (Outcome != Correct) ---
-            # Now this only triggers for Incorrect, API Error, Parsing Failed
-            gemini_failed = gem_outcome != "Correct"
-            gemma_failed = gma_outcome != "Correct"
-            nvidia_failed = nvd_outcome != "Correct"
+            # --- Save ALL results (not just failures) ---
+            log_id = question_data.get(actual_id_field, q_id) if actual_id_field else q_id # Use actual ID if possible
+            # Prepare base info
+            base_info = {'id': log_id, 'dataset': args.dataset, 'question': raw_question_text, 'ground_truth_answer': ground_truth_ans}
+            if task_type == 'mcqa' and options_dict: 
+                base_info.update({f'option_{k.lower()}': v for k,v in options_dict.items()})
+            # Get explanation using actual field name if defined
+            if actual_exp_field:
+                base_info['ground_truth_explanation'] = question_data.get(actual_exp_field, '')
 
-            # --- Save failures/errors ITERATIVELY ---
-            # Logic remains largely same, but uses new variable names and dict keys
-            if gemini_failed or gemma_failed or nvidia_failed:
-                 log_id = question_data.get(actual_id_field, q_id) if actual_id_field else q_id # Use actual ID if possible
-                 # Prepare base info using NEW column names
-                 base_info = {'id': log_id, 'dataset': args.dataset, 'question': raw_question_text, 'ground_truth_answer': ground_truth_ans}
-                 if task_type == 'mcqa' and options_dict: base_info.update({f'option_{k.lower()}': v for k,v in options_dict.items()})
-                 # Get explanation using actual field name if defined
-                 if actual_exp_field:
-                      base_info['ground_truth_explanation'] = question_data.get(actual_exp_field, '')
+            # Save Gemini results
+            gemini_info = {**base_info,
+                'gemini_model': getattr(gemini_model, 'model_name', '?') if gemini_model else "N/A",
+                'gemini_parsed_answer': gem_parsed_ans if gem_parsed_ans is not None else "N/A",
+                'gemini_raw_response': gem_raw or "N/A",
+                'gemini_outcome': gem_outcome,
+            }
+            save_result_to_csv(gemini_info, gemini_output_path, gemini_column_order, "Gemini")
 
-                 # Log failures using NEW dictionary keys and passing NEW column order list
-                 if gemini_failed:
-                     gemini_failure_count += 1
-                     # Use NEW keys when creating the dict
-                     gemini_info = {**base_info,
-                         'gemini_model': getattr(gemini_model, 'model_name', '?') if gemini_model else "N/A",
-                         'gemini_parsed_answer': gem_parsed_ans if gem_parsed_ans is not None else "N/A", # Use new key
-                         'gemini_raw_response': gem_raw or "N/A",
-                         'gemini_outcome': gem_outcome, # Use new key
-                     }
-                     save_failure_iteratively(gemini_info, gemini_output_path, gemini_column_order, "Gemini") # Pass new column order
+            # Save Gemma results
+            gemma_info = {**base_info,
+                'gemma_model': gemma_model_id,
+                'gemma_parsed_answer': gma_parsed_ans if gma_parsed_ans is not None else "N/A",
+                'gemma_raw_response': gma_raw or "N/A",
+                'gemma_outcome': gma_outcome,
+            }
+            save_result_to_csv(gemma_info, gemma_output_path, gemma_column_order, "Gemma")
 
-                 if gemma_failed:
-                     gemma_failure_count += 1
-                     # Use NEW keys when creating the dict
-                     gemma_info = {**base_info,
-                         'gemma_model': gemma_model_id,
-                         'gemma_parsed_answer': gma_parsed_ans if gma_parsed_ans is not None else "N/A", # Use new key
-                         'gemma_raw_response': gma_raw or "N/A",
-                         'gemma_outcome': gma_outcome, # Use new key
-                     }
-                     save_failure_iteratively(gemma_info, gemma_output_path, gemma_column_order, "Gemma") # Pass new column order
+            # Save NVIDIA results
+            nvidia_info = {**base_info,
+                'nvidia_model': nvidia_model_id,
+                'nvidia_parsed_answer': nvd_parsed_ans if nvd_parsed_ans is not None else "N/A",
+                'nvidia_raw_response': nvd_raw or "N/A",
+                'nvidia_outcome': nvd_outcome,
+            }
+            save_result_to_csv(nvidia_info, nvidia_output_path, nvidia_column_order, "NVIDIA")
 
-                 if nvidia_failed:
-                     nvidia_failure_count += 1
-                     # Use NEW keys when creating the dict
-                     nvidia_info = {**base_info,
-                         'nvidia_model': nvidia_model_id,
-                         'nvidia_parsed_answer': nvd_parsed_ans if nvd_parsed_ans is not None else "N/A", # Use new key
-                         'nvidia_raw_response': nvd_raw or "N/A",
-                         'nvidia_outcome': nvd_outcome, # Use new key
-                     }
-                     save_failure_iteratively(nvidia_info, nvidia_output_path, nvidia_column_order, "NVIDIA") # Pass new column order
-            else:
-                 # Only print this if NO models failed
-                 print(f"  -> All Models Correct.")
+            # Print summary every 10 questions processed
+            if processed_count % 10 == 0:
+                print(f"\n--- Progress Summary (After {processed_count} questions) ---")
+                print(f"Gemini: {gemini_correct_count} correct, {gemini_incorrect_count} incorrect, {gemini_error_count} errors")
+                print(f"Gemma: {gemma_correct_count} correct, {gemma_incorrect_count} incorrect, {gemma_error_count} errors")
+                print(f"NVIDIA: {nvidia_correct_count} correct, {nvidia_incorrect_count} incorrect, {nvidia_error_count} errors\n")
 
         except StopIteration:
             # This happens when the dataset runs out of items
@@ -841,55 +883,80 @@ def evaluate_questions(dataset, config,
             break # Exit the while loop
 
     # --- Final Summary ---
-    # Use new counts for clarity
+    # Calculate accuracy (counting only questions where parsing succeeded)
+    def calculate_accuracy(correct, incorrect):
+        total_valid = correct + incorrect
+        return (correct / total_valid * 100) if total_valid > 0 else 0
+    
+    gemini_accuracy = calculate_accuracy(gemini_correct_count, gemini_incorrect_count)
+    gemma_accuracy = calculate_accuracy(gemma_correct_count, gemma_incorrect_count)
+    nvidia_accuracy = calculate_accuracy(nvidia_correct_count, nvidia_incorrect_count)
+
     print(f"\n--- Evaluation Summary ---")
     print(f"Dataset: '{args.dataset}'")
     print(f"Target Max Valid Questions: {max_questions or 'All'}")
     print(f"Total Items Checked in Dataset: {items_checked}")
-    print(f"Skipped Due to Missing Question or Invalid Ground Truth: {skipped_count}") # Updated reason
+    print(f"Skipped Due to Missing Question or Invalid Ground Truth: {skipped_count}")
     print(f"Valid Questions Processed: {processed_count}")
-    print(f"Failures Logged: Gemini={gemini_failure_count}, Gemma={gemma_failure_count}, NVIDIA={nvidia_failure_count}")
+    print(f"\nModel Performance:")
+    print(f"  Gemini: {gemini_correct_count} correct, {gemini_incorrect_count} incorrect, {gemini_error_count} errors (Accuracy: {gemini_accuracy:.2f}%)")
+    print(f"  Gemma: {gemma_correct_count} correct, {gemma_incorrect_count} incorrect, {gemma_error_count} errors (Accuracy: {gemma_accuracy:.2f}%)")
+    print(f"  NVIDIA: {nvidia_correct_count} correct, {nvidia_incorrect_count} incorrect, {nvidia_error_count} errors (Accuracy: {nvidia_accuracy:.2f}%)")
+    print(f"\nResults saved to: {results_dir}")
+    
+    # Save a summary file with the results
+    summary_path = os.path.join(results_dir, f"summary_{args.dataset}.txt")
+    try:
+        with open(summary_path, 'w') as f:
+            f.write(f"Evaluation Summary for Dataset: {args.dataset}\n")
+            f.write(f"Date & Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            f.write(f"Total Items Checked in Dataset: {items_checked}\n")
+            f.write(f"Skipped Items: {skipped_count}\n")
+            f.write(f"Valid Questions Processed: {processed_count}\n\n")
+            f.write(f"Model Performance:\n")
+            f.write(f"  Gemini ({getattr(gemini_model, 'model_name', '?') if gemini_model else 'N/A'}):\n")
+            f.write(f"    Correct: {gemini_correct_count} ({gemini_accuracy:.2f}%)\n")
+            f.write(f"    Incorrect: {gemini_incorrect_count}\n")
+            f.write(f"    Errors: {gemini_error_count}\n\n")
+            f.write(f"  Gemma ({gemma_model_id}):\n")
+            f.write(f"    Correct: {gemma_correct_count} ({gemma_accuracy:.2f}%)\n")
+            f.write(f"    Incorrect: {gemma_incorrect_count}\n")
+            f.write(f"    Errors: {gemma_error_count}\n\n")
+            f.write(f"  NVIDIA ({nvidia_model_id}):\n")
+            f.write(f"    Correct: {nvidia_correct_count} ({nvidia_accuracy:.2f}%)\n")
+            f.write(f"    Incorrect: {nvidia_incorrect_count}\n")
+            f.write(f"    Errors: {nvidia_error_count}\n")
+        print(f"Summary saved to: {summary_path}")
+    except Exception as e:
+        print(f"Error saving summary: {e}")
 
 
 # --- Main Execution (Handles Arguments) ---
 if __name__ == "__main__":
 
     # --- Argument Parsing ---
-    parser = argparse.ArgumentParser(description="Evaluate LLMs (Gemini, Gemma, NVIDIA) on medical datasets with clearer output.") # Updated description
+    parser = argparse.ArgumentParser(description="Evaluate LLMs (Gemini, Gemma, NVIDIA) on medical datasets. Saves all results in timestamped directory.")
     # Add --clear_logs argument
     parser.add_argument("--clear_logs", action='store_true', help="Delete existing output CSV files first.")
     parser.add_argument("--dataset", "-d", required=True, choices=DATASET_CONFIGS.keys(),
                         help="Name of the dataset configuration to use.")
     parser.add_argument("--max_questions", "-n", type=int, default=None,
-                        help="Maximum number of *valid* questions to process (default: process all).") # Updated help text
+                        help="Maximum number of *valid* questions to process (default: process all).")
     args = parser.parse_args()
 
-    # Determine output file names based on dataset
-    dataset_key = args.dataset
-    gemini_output_file = f"gemini_failed_{dataset_key}.csv"
-    gemma_output_file = f"gemma_failed_{dataset_key}.csv"
-    nvidia_output_file = f"nvidia_deepseek_failed_{dataset_key}.csv"
-
-    # Clear logs if requested
+    # Create timestamped directory for outputs
+    results_dir = create_timestamped_directory()
+    
+    # Clear logs is no longer needed since we're using timestamped directories,
+    # but kept for backward compatibility
     if args.clear_logs:
-        print("Attempting to clear previous log files...")
-        cleared_count = 0
-        for f_path in [gemini_output_file, gemma_output_file, nvidia_output_file]:
-            if os.path.exists(f_path):
-                try:
-                    os.remove(f_path)
-                    print(f"  - Cleared {f_path}")
-                    cleared_count += 1
-                except OSError as e:
-                    print(f"  - Error clearing {f_path}: {e}")
-        if cleared_count == 0: print(" -> No existing log files found to clear.")
-        else: print(f" -> Done clearing {cleared_count} file(s).")
+        print("Note: --clear_logs not needed with timestamped directories, but noted.")
 
     # --- Initialize API Clients ---
     gemini_model_instance = None
     if GOOGLE_API_KEY and genai: # Check if genai was imported successfully
         try:
-            print(f"Configuring Google GenAI ({GEMINI_MODEL_ID})...") # Use f-string
+            print(f"Configuring Google GenAI ({GEMINI_MODEL_ID})...")
             genai.configure(api_key=GOOGLE_API_KEY)
             gemini_model_instance = genai.GenerativeModel(GEMINI_MODEL_ID)
             print(" -> Google GenAI initialized successfully.")
@@ -903,7 +970,7 @@ if __name__ == "__main__":
     nvidia_client_instance = None
     if NVIDIA_API_KEY and OpenAI: # Check if OpenAI was imported successfully
         try:
-            print(f"Configuring NVIDIA Client ({NVIDIA_MODEL_ID})...") # Use f-string
+            print(f"Configuring NVIDIA Client ({NVIDIA_MODEL_ID})...")
             nvidia_client_instance = OpenAI(base_url=NVIDIA_API_BASE_URL, api_key=NVIDIA_API_KEY)
             print(" -> NVIDIA API Client initialized successfully.")
         except Exception as e:
@@ -919,7 +986,6 @@ if __name__ == "__main__":
     else:
         print("Skipping OpenRouter calls (OPENROUTER_API_KEY not found).")
 
-
     # Check if at least one API client is available
     if not gemini_model_instance and not OPENROUTER_API_KEY and not nvidia_client_instance:
          print("\nError: No API keys/clients configured or initialized successfully for any service. Exiting.")
@@ -932,16 +998,14 @@ if __name__ == "__main__":
     if selected_dataset and selected_config:
         evaluate_questions(
             dataset=selected_dataset,
-            config=selected_config, # Pass dataset config
-            gemini_output_path=gemini_output_file, # Use dynamic filenames
-            gemma_output_path=gemma_output_file,
-            nvidia_output_path=nvidia_output_file,
+            config=selected_config,
+            results_dir=results_dir,  # Pass the timestamped directory
             gemini_model=gemini_model_instance,
             gemma_api_key=OPENROUTER_API_KEY,
             gemma_model_id=GEMMA_MODEL_ID,
             nvidia_client=nvidia_client_instance,
             nvidia_model_id=NVIDIA_MODEL_ID,
-            max_questions=args.max_questions # Use value from args
+            max_questions=args.max_questions
         )
     else:
         print(f"\nExiting due to dataset loading failure for '{args.dataset}'.")
