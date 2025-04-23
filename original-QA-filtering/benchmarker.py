@@ -468,14 +468,16 @@ def call_gemini_api(prompt: str, model: genai.GenerativeModel, task_type: str):
     elif task_type == "yesno":
         system_instruction = "Respond ONLY with one word: Yes, No, or Maybe."
     else:
-        system_instruction = "Please answer the question."
+        system_instruction = ("INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
+            "FORMAT: Your entire response must be exactly 'X' where X is just the letter.\n\n"
+            "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
 
     # The try/except for retryable errors is now handled by the decorator
     # We still need to catch non-retryable API issues or handle the response structure
     try:
-        generation_config = genai.types.GenerationConfig(max_output_tokens=15, temperature=0.1, top_p=0.95)
+        generation_config = genai.types.GenerationConfig(max_output_tokens=4096, temperature=0.1, top_p=0.95)
         print(f"  -> Calling Gemini ({getattr(model, 'model_name', '?')})...")  # Added model name log
-        response = model.generate_content([system_instruction, prompt], generation_config=generation_config,
+        response = model.generate_content([str(system_instruction), prompt], generation_config=generation_config,
                                           request_options={'timeout': 60})  # Added timeout
 
         # Check for blocked content *before* trying to access .text
@@ -623,19 +625,21 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         system_prompt = "Analyze context/question. Respond ONLY with Yes, No, or Maybe inside square brackets at the end. Example: [Yes]."
         expected_pattern = r'\[(Yes|No|Maybe)\]'  # Case-insensitive search pattern needed in re.search
     else:
-        system_prompt = "Please answer the question."
-        expected_pattern = None
+        system_prompt = ("INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
+            "FORMAT: Your entire response must be exactly '[X]' where X is just the letter.\n\n"
+            "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
+        expected_pattern = r'\[([A-Z])\]'
 
     # The try/except for retryable errors is now handled by the decorator
     try:
         print(f"  -> Calling NVIDIA ({model_id})...")  # Added model name log
         completion = client.chat.completions.create(
             model=model_id,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+            messages=[{"role": "system", "content": str(system_prompt)}, {"role": "user", "content": prompt}],
             temperature=0.1, top_p=0.95,
-            max_tokens=4096,  # <<< KEPT INCREASED TOKENS >>>
+            max_tokens=4096, 
             stream=False,
-            timeout=60.0  # Added timeout
+            timeout=60.0 
         )
 
         if completion.choices and len(completion.choices) > 0:
@@ -658,7 +662,7 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
                     matches = re.findall(expected_pattern, raw_response_text, re.IGNORECASE)
                     if matches:
                         extracted_answer = matches[-1]  # Get the last bracketed answer found
-                        parsed_choice = extracted_answer.upper() if task_type == "mcqa" else extracted_answer.lower()
+                        parsed_choice = extracted_answer.upper() if (task_type == "mcqa" or task_type == "medXpert") else extracted_answer.lower()
                         print(f"  -> NVIDIA Parsed (Bracket): {parsed_choice}")
                     else:
                         # Fallback if bracket format not found
@@ -821,9 +825,8 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
                             # Create a stronger system instruction for retry
                             enhanced_system_instruction = system_instruction + (
                                 "\nPLEASE READ CAREFULLY: Your previous response was incorrect. "
-                                "For MCQA questions, you MUST provide ONLY a single letter (A, B, C, etc.) as your answer. "
+                                "For questions, you MUST provide ONLY a single letter (A, B, C, etc.) as your answer. "
                                 "DO NOT provide explanations, reasoning, or context. "
-                                "ONLY the letter. Example: 'Answer: A'\n\n"
                             )
                             
                             # Use the stronger instruction for the retry
@@ -836,9 +839,6 @@ def call_vertex_ai_gemma_api(prompt: str, project_id: str, endpoint_id: str, loc
                         enhanced_system_instruction = (
                             "INSTRUCTION: You MUST answer with EXACTLY this format: 'Answer: X' where X is just ONE LETTER.\n\n"
                             "IMPORTANT: I need ONLY the letter, nothing else. No explanations or additional text.\n\n"
-                            "BAD: 'I think the answer is A because...'\n"
-                            "BAD: 'Answer: The patient with...'\n"
-                            "GOOD: 'Answer: A'\n\n"
                         )
                         full_prompt = f"{enhanced_system_instruction}\n\n{prompt}"
             else:
