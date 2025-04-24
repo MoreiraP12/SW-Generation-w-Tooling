@@ -468,7 +468,7 @@ def call_gemini_api(prompt: str, model: genai.GenerativeModel, task_type: str):
     elif task_type == "yesno":
         system_instruction = "Respond ONLY with one word: Yes, No, or Maybe."
     else:
-        system_instruction = "Please answer the question."
+        system_instruction = "Respond ONLY with the single letter."
 
     # The try/except for retryable errors is now handled by the decorator
     # We still need to catch non-retryable API issues or handle the response structure
@@ -623,11 +623,11 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         system_prompt = "Analyze context/question. Respond ONLY with Yes, No, or Maybe inside square brackets at the end. Example: [Yes]."
         expected_pattern = r'\[(Yes|No|Maybe)\]'  # Case-insensitive search pattern needed in re.search
     else:
-        system_instruction = (
+        system_prompt = (
             "INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
             "FORMAT: Your entire response must be exactly 'Answer: X' where X is just the letter.\n\n"
             "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
-        valid_answer_pattern = re.compile(r'^[A-Z]$')
+        expected_pattern = re.compile(r'^[A-Z]$')
 
     # The try/except for retryable errors is now handled by the decorator
     try:
