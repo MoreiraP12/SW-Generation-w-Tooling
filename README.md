@@ -7,17 +7,17 @@ These commands will run the evaluation on the first 2 questions from each datase
 1. **Test MedMCQA:**
 
    ```bash
-   python benchmarker.py -d medmcqa -n 2 --clear_logs
+   python benchmarker.py -d medmcqa -r 1:100 --clear_logs
    ```
 2. **Test MMLU Clinical Knowledge:**
 
    ```bash
-   python benchmarker.py -d mmlu_clinical_knowledge -n 2 --clear_logs
+   python benchmarker.py -d mmlu_clinical_knowledge -r 1:100 --clear_logs
    ```
 3. **Test PubMedQA Labeled (pqa_l):**
 
    ```bash
-   python benchmarker.py -d pubmedqa_pqa_l -n 2 --clear_logs
+   python benchmarker.py -d pubmedqa_pqa_l -r 1:100 --clear_logs
    ```
 
 **(Optional) Test PubMedQA Artificial:**
