@@ -1,0 +1,3 @@
+id,dataset,question,ground_truth_answer,gemini_model,gemini_parsed_answer,gemini_raw_response,gemini_outcome
+Text-333,medxpertqa,"A 54-year-old woman is evaluated for a hand deformity. The surgical team is considering a procedure that would dorsally reposition the lateral bands to address the underlying pathological mechanism. Which finger deformity is this patient most likely experiencing?
+Answer Choices: (A) Mallet finger deformity (B) Boutonneire finger deformity (C) Clinodactyly (D) Gamekeeper's thumb (E) Swan neck finger defomity (F) Trigger finger deformity (G) Dupuytren's contracture (H) Hammer finger deformity (I) Camptodactyly (J) Lumbrical plus finger deformity",B,models/gemini-2.0-flash,E,E,Incorrect

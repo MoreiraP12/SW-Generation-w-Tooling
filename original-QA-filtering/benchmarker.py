@@ -627,7 +627,7 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
             "INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
             "FORMAT: Your entire response must be exactly 'Answer: X' where X is just the letter.\n\n"
             "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
-        expected_pattern = re.compile(r'^[A-Z]$')
+        expected_pattern = r'Answer:\s*(\S)'
 
     # The try/except for retryable errors is now handled by the decorator
     try:
@@ -662,7 +662,7 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
                     matches = re.findall(expected_pattern, raw_response_text, re.IGNORECASE)
                     if matches:
                         extracted_answer = matches[-1]  # Get the last bracketed answer found
-                        parsed_choice = extracted_answer.upper() if task_type == "mcqa" else extracted_answer.lower()
+                        parsed_choice = extracted_answer.upper() if task_type == "mcqa" or "medXpert" else extracted_answer.lower()
                         print(f"  -> NVIDIA Parsed (Bracket): {parsed_choice}")
                     else:
                         # Fallback if bracket format not found
