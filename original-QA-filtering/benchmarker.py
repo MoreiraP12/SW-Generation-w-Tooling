@@ -623,8 +623,11 @@ def call_nvidia_api(prompt: str, client: OpenAI, model_id: str, task_type: str):
         system_prompt = "Analyze context/question. Respond ONLY with Yes, No, or Maybe inside square brackets at the end. Example: [Yes]."
         expected_pattern = r'\[(Yes|No|Maybe)\]'  # Case-insensitive search pattern needed in re.search
     else:
-        system_prompt = "Please answer the question."
-        expected_pattern = None
+        system_instruction = (
+            "INSTRUCTION: Answer the following multiple-choice question with ONLY the letter of the correct option.\n\n"
+            "FORMAT: Your entire response must be exactly 'Answer: X' where X is just the letter.\n\n"
+            "IMPORTANT: DO NOT repeat any question text or options in your response.\n\n")
+        valid_answer_pattern = re.compile(r'^[A-Z]$')
 
     # The try/except for retryable errors is now handled by the decorator
     try:
