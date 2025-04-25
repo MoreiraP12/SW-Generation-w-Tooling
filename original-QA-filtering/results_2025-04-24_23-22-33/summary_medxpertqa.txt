@@ -1,0 +1,21 @@
+Evaluation Summary for Dataset: medxpertqa
+Date & Time: 2025-04-25 11:36:49
+
+Start Index: 742
+End Index: 1000
+Max Questions: All
+Total Items Checked in Dataset: 1001
+Skipped Items: 0
+Valid Questions Processed: 259
+
+Model Performance:
+  Gemini (models/gemini-2.0-flash):
+    Correct: 65 (25.10%)
+    Incorrect: 194
+    Errors: 0
+
+  Nvidia (deepseek-ai/deepseek-r1):
+    Correct: 83 (47.98%)
+    Incorrect: 90
+    Errors: 86
+
