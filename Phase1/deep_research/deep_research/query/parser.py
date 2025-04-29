@@ -13,15 +13,30 @@ class QueryParser:
     
     def __init__(self):
         """Initialize the query parser."""
-        # Download necessary NLTK resources if not already downloaded
+        # Download necessary NLTK resources
         try:
-            nltk.data.find('tokenizers/punkt')
-            nltk.data.find('corpora/stopwords')
-        except LookupError:
-            nltk.download('punkt')
-            nltk.download('stopwords')
-        
-        self.stop_words = set(stopwords.words('english'))
+            import ssl
+            try:
+                _create_unverified_https_context = ssl._create_unverified_context
+            except AttributeError:
+                pass
+            else:
+                ssl._create_default_https_context = _create_unverified_https_context
+            
+            # Force download these resources
+            for resource in ['punkt_tab','punkt', 'stopwords', 'wordnet']:
+                try:
+                    nltk.data.find(f'tokenizers/{resource}' if resource == 'punkt' else f'corpora/{resource}')
+                except LookupError:
+                    print(f"Downloading {resource}...")
+                    nltk.download(resource, quiet=False)
+                    
+            self.stop_words = set(stopwords.words('english'))
+        except Exception as e:
+            print(f"Error initializing NLTK resources: {e}")
+            print("Please run 'import nltk; nltk.download(\"punkt\"); nltk.download(\"stopwords\"); nltk.download(\"wordnet\")' manually")
+            # Initialize with an empty set if downloads fail
+            self.stop_words = set()
     
     def parse(self, query_text):
         """

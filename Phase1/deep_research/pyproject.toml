@@ -7,26 +7,22 @@ name = "deep_research"
 version = "0.1.0"
 description = "A Python package for conducting deep online research across multiple websites"
 readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
 authors = [
     {name = "Your Name", email = "your.email@example.com"}
 ]
-license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
 ]
-requires-python = ">=3.7"
 dependencies = [
     "requests>=2.25.0",
     "beautifulsoup4>=4.9.0",
     "nltk>=3.6.0",
     "aiohttp>=3.7.0",
     "spacy>=3.0.0",
-    "pydantic>=1.8.0",
 ]
 
 [project.optional-dependencies]
@@ -37,17 +33,5 @@ dev = [
     "flake8>=3.9.0",
 ]
 
-[project.urls]
-"Homepage" = "https://github.com/yourusername/deep_research"
-"Bug Tracker" = "https://github.com/yourusername/deep_research/issues"
-
 [tool.setuptools]
 packages = ["deep_research"]
-
-[tool.black]
-line-length = 88
-target-version = ["py37", "py38", "py39"]
-
-[tool.isort]
-profile = "black"
-line_length = 88
