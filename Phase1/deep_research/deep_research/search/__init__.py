@@ -9,10 +9,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from .engines import GoogleSearchEngine, BingSearchEngine, DuckDuckGoSearchEngine
+from .engines import GoogleSearchEngine, BingSearchEngine, DuckDuckGoSearchEngine, WikipediaSearchEngine
 from .aggregator import SearchAggregator
 
-__all__ = ['search', 'SearchAggregator', 'GoogleSearchEngine', 'BingSearchEngine', 'DuckDuckGoSearchEngine']
+__all__ = ['search', 'SearchAggregator', 'GoogleSearchEngine', 'BingSearchEngine', 'DuckDuckGoSearchEngine', 'WikipediaSearchEngine']
 
 def search(query, engines=None, max_results=30, safe_search=True):
     """
@@ -34,7 +34,8 @@ def search(query, engines=None, max_results=30, safe_search=True):
     available_engines = {
         'google': GoogleSearchEngine(),
         'bing': BingSearchEngine(),
-        'duckduckgo': DuckDuckGoSearchEngine()
+        'duckduckgo': DuckDuckGoSearchEngine(),
+        'wikipedia': WikipediaSearchEngine()
     }
     
     if engines is None:
