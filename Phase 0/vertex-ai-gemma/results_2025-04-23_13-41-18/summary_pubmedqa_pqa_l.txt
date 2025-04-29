@@ -1,0 +1,13 @@
+Evaluation Summary for Dataset: pubmedqa_pqa_l
+Date & Time: 2025-04-23 13:51:58
+
+Total Items Checked in Dataset: 1000
+Skipped Items: 0
+Valid Questions Processed: 1000
+
+Model Performance:
+  Vertex_gemma (vertex-7050478675136872448):
+    Correct: 550 (55.00%)
+    Incorrect: 450
+    Errors: 0
+

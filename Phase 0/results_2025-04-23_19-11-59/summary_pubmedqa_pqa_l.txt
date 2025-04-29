@@ -1,0 +1,21 @@
+Evaluation Summary for Dataset: pubmedqa_pqa_l
+Date & Time: 2025-04-24 14:26:34
+
+Start Index: 199
+End Index: 999
+Max Questions: All
+Total Items Checked in Dataset: 1000
+Skipped Items: 0
+Valid Questions Processed: 801
+
+Model Performance:
+  Gemini (models/gemini-2.0-flash):
+    Correct: 468 (59.17%)
+    Incorrect: 323
+    Errors: 10
+
+  Nvidia (deepseek-ai/deepseek-r1):
+    Correct: 613 (77.69%)
+    Incorrect: 176
+    Errors: 12
+
